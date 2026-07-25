@@ -610,23 +610,26 @@ impl Game {
         let doubles = first == second;
 
         if self.players[player].cooldown_turns > 0 {
-            if doubles {
+            if self.players[player].bypass_tokens > 0 {
+                self.players[player].bypass_tokens -= 1;
                 self.players[player].cooldown_turns = 0;
                 self.extra_turn = false;
                 self.doubles_streak = 0;
                 self.move_by(first + second);
                 return Ok(());
             }
-            self.players[player].cooldown_turns += 1;
-            if self.players[player].cooldown_turns > 3 {
+
+            if !doubles {
                 self.charge(player, COOLDOWN_FEE, None);
-                if !self.players[player].bankrupt {
-                    self.players[player].cooldown_turns = 0;
-                    self.move_by(first + second);
+                if self.players[player].bankrupt {
+                    return Ok(());
                 }
-            } else {
-                self.phase = Phase::Manage;
             }
+
+            self.players[player].cooldown_turns = 0;
+            self.extra_turn = false;
+            self.doubles_streak = 0;
+            self.move_by(first + second);
             return Ok(());
         }
 
@@ -1358,27 +1361,79 @@ mod tests {
     }
 
     #[test]
-    fn third_failed_cooldown_roll_pays_and_moves() {
+    fn cooldown_uses_bypass_before_checking_doubles() {
         let mut game = game();
         let seed = (1..10_000)
             .find(|seed| {
                 let mut rng = SimpleRng::new(*seed);
-                (0..3).all(|_| rng.die() != rng.die())
+                rng.die() == rng.die()
             })
             .unwrap();
         game.rng = SimpleRng::new(seed);
         game.players[0].position = 6;
         game.players[0].cooldown_turns = 1;
-        for attempt in 0..3 {
-            game.phase = Phase::AwaitRoll;
-            game.apply(Action::Roll).unwrap();
-            if attempt < 2 {
-                assert!(game.players[0].cooldown_turns > 0);
-            }
-        }
+        game.players[0].bypass_tokens = 1;
+        game.apply(Action::Roll).unwrap();
+        assert_eq!(game.players[0].bypass_tokens, 0);
+        assert_eq!(game.players[0].cooldown_turns, 0);
+        assert_eq!(game.players[0].credits, START_CREDITS);
+        assert_ne!(game.players[0].position, 6);
+        assert!(!game.extra_turn);
+    }
+
+    #[test]
+    fn cooldown_doubles_leave_without_paying() {
+        let mut game = game();
+        let seed = (1..10_000)
+            .find(|seed| {
+                let mut rng = SimpleRng::new(*seed);
+                rng.die() == rng.die()
+            })
+            .unwrap();
+        game.rng = SimpleRng::new(seed);
+        game.players[0].position = 6;
+        game.players[0].cooldown_turns = 1;
+        game.apply(Action::Roll).unwrap();
+        assert_eq!(game.players[0].cooldown_turns, 0);
+        assert_eq!(game.players[0].credits, START_CREDITS);
+        assert_ne!(game.players[0].position, 6);
+        assert!(!game.extra_turn);
+    }
+
+    #[test]
+    fn cooldown_non_doubles_pay_and_move_immediately() {
+        let mut game = game();
+        let seed = (1..10_000)
+            .find(|seed| {
+                let mut rng = SimpleRng::new(*seed);
+                rng.die() != rng.die()
+            })
+            .unwrap();
+        game.rng = SimpleRng::new(seed);
+        game.players[0].position = 6;
+        game.players[0].cooldown_turns = 1;
+        game.apply(Action::Roll).unwrap();
         assert_eq!(game.players[0].cooldown_turns, 0);
         assert_eq!(game.players[0].credits, START_CREDITS - COOLDOWN_FEE);
         assert_ne!(game.players[0].position, 6);
+    }
+
+    #[test]
+    fn unaffordable_cooldown_fee_uses_bankruptcy_flow_without_moving() {
+        let mut game = game();
+        let seed = (1..10_000)
+            .find(|seed| {
+                let mut rng = SimpleRng::new(*seed);
+                rng.die() != rng.die()
+            })
+            .unwrap();
+        game.rng = SimpleRng::new(seed);
+        game.players[0].credits = 0;
+        game.players[0].position = 6;
+        game.players[0].cooldown_turns = 1;
+        game.apply(Action::Roll).unwrap();
+        assert!(game.players[0].bankrupt);
+        assert_eq!(game.players[0].position, 6);
     }
 
     #[test]

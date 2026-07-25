@@ -46,6 +46,11 @@ Commands include `roll`, `buy`, `auction`, `bid <amount>`, `end`,
 `paycooldown`, `usebypass`, `save [name]`, `load <id>`, `status`, `help`,
 and `quit`.
 
+While in cooldown, rolling automatically consumes a bypass token when one is
+available. Otherwise, doubles leave cooldown for free; a non-double roll
+automatically pays 50 credits before moving. If the fee cannot be raised, the
+normal bankruptcy flow applies and the player does not move.
+
 ## Development
 
 ```console

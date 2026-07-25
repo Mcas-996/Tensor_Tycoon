@@ -333,6 +333,10 @@ impl App {
 
     fn handle_game_key(&mut self, key: KeyEvent) {
         let phase = self.game.as_ref().map(|g| g.phase);
+        let human_auction_turn = self
+            .game
+            .as_ref()
+            .is_some_and(|game| game.auction_actor() == Some(0));
         match key.code {
             KeyCode::Char(':') => {
                 self.overlay = Overlay::Command;
@@ -361,19 +365,17 @@ impl App {
             KeyCode::Char('a') if matches!(phase, Some(Phase::OfferPurchase { .. })) => {
                 self.apply_action(Action::Decline)
             }
-            KeyCode::Char('b') if phase == Some(Phase::Auction) => {
+            KeyCode::Char('b' | 'B') if phase == Some(Phase::Auction) && human_auction_turn => {
                 if let Some(game) = self.game.as_ref() {
-                    if game.auction_actor() == Some(0) {
-                        let minimum = game
-                            .auction
-                            .as_ref()
-                            .map(|a| if a.high_bid == 0 { 10 } else { a.high_bid + 10 })
-                            .unwrap_or(10);
-                        self.apply_action(Action::AuctionBid(minimum));
-                    }
+                    let minimum = game
+                        .auction
+                        .as_ref()
+                        .map(|a| if a.high_bid == 0 { 10 } else { a.high_bid + 10 })
+                        .unwrap_or(10);
+                    self.apply_action(Action::AuctionBid(minimum));
                 }
             }
-            KeyCode::Char('a') if phase == Some(Phase::Auction) => {
+            KeyCode::Char('a' | 'A') if phase == Some(Phase::Auction) && human_auction_turn => {
                 self.apply_action(Action::AuctionPass)
             }
             KeyCode::Char('e') if phase == Some(Phase::Manage) => {
@@ -924,6 +926,48 @@ fn render_board(frame: &mut Frame, app: &App, game: &Game, area: Rect) {
         Phase::Manage => "m models · e end turn · s save",
         Phase::GameOver => "q quit · : save <name>",
     };
+    let auction = if game.phase == Phase::Auction {
+        game.auction
+            .as_ref()
+            .map(|auction| {
+                let definition = model(auction.tile).expect("auction model must exist");
+                let bidder = auction
+                    .current_bidder()
+                    .and_then(|id| game.players.get(id))
+                    .map(|player| player.name.as_str())
+                    .unwrap_or("?");
+                let minimum = if auction.high_bid == 0 {
+                    10
+                } else {
+                    auction.high_bid + 10
+                };
+                let leader = auction
+                    .high_bidder
+                    .and_then(|id| game.players.get(id))
+                    .map(|player| player.name.as_str());
+                match app.language {
+                    Language::ZhCn => format!(
+                        "\n\n拍卖：{}\n当前最高价：¢{}{} · 下一最低价：¢{}\n轮到：{}",
+                        definition.name(app.language),
+                        auction.high_bid,
+                        leader.map(|name| format!("（{name}）")).unwrap_or_default(),
+                        minimum,
+                        bidder
+                    ),
+                    Language::En => format!(
+                        "\n\nAuction: {}\nHigh bid: ¢{}{} · Next minimum: ¢{}\nTurn: {}",
+                        definition.name(app.language),
+                        auction.high_bid,
+                        leader.map(|name| format!(" ({name})")).unwrap_or_default(),
+                        minimum,
+                        bidder
+                    ),
+                }
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let winner = if game.phase == Phase::GameOver {
         let names = game
             .winners
@@ -937,9 +981,10 @@ fn render_board(frame: &mut Frame, app: &App, game: &Game, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{}\n\n{}{}",
+            "{}\n\n{}{}{}",
             text(app.language, "title"),
             controls,
+            auction,
             winner
         ))
         .block(Block::default().borders(Borders::ALL))
@@ -1043,6 +1088,7 @@ fn render_help(frame: &mut Frame, app: &App) {
             命令：roll, buy, auction, bid <金额>, end, tensor <格号>,\n\
             untensor <格号>, archive <格号>, restore <格号>,\n\
             paycooldown, usebypass, save [名称], load <id>, status, help, quit\n\n\
+            冷却区会优先自动使用绕过令牌；没有令牌时，双数免费离开，否则自动支付 50 点。\n\
             持有同家任意三个模型后可均匀配置 Tensor；归档前必须释放该家族全部 Tensor。\n\
             拒绝购买会触发所有未破产玩家参与的拍卖。"
         }
@@ -1054,6 +1100,8 @@ fn render_help(frame: &mut Frame, app: &App) {
             Commands: roll, buy, auction, bid <amount>, end, tensor <tile>,\n\
             untensor <tile>, archive <tile>, restore <tile>,\n\
             paycooldown, usebypass, save [name], load <id>, status, help, quit\n\n\
+            Cooldown automatically uses a bypass token first. Without one, doubles leave free;\n\
+            otherwise 50 credits are paid automatically.\n\
             Own any three models in a family to allocate Tensors evenly. Release every\n\
             Tensor in that family before archiving. Declining a purchase starts an auction."
         }
@@ -1073,6 +1121,7 @@ fn render_help(frame: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEventKind, KeyEventState};
     use ratatui::backend::TestBackend;
 
     #[test]
@@ -1134,6 +1183,82 @@ mod tests {
             .filter(|symbol| !symbol.trim().is_empty())
             .collect::<String>();
         assert!(content.contains("Qwen3"));
+    }
+
+    fn auction_app() -> App {
+        let root =
+            std::env::temp_dir().join(format!("tensor-ui-auction-test-{}", std::process::id()));
+        let mut app = App::new(SaveStore::at(root));
+        app.start_game();
+        app.game.as_mut().unwrap().phase = Phase::OfferPurchase { tile: 1 };
+        app.apply_action(Action::Decline);
+        app
+    }
+
+    fn press(character: char) -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char(character),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn auction_bid_shortcut_accepts_lowercase_and_uppercase_b() {
+        for character in ['b', 'B'] {
+            let mut app = auction_app();
+            app.handle_key(press(character));
+            let auction = app.game.as_ref().unwrap().auction.as_ref().unwrap();
+            assert!(auction.high_bid >= 10);
+            assert_eq!(app.game.as_ref().unwrap().auction_actor(), Some(0));
+        }
+    }
+
+    #[test]
+    fn auction_panel_shows_live_bid_state() {
+        let mut app = auction_app();
+        app.handle_key(press('b'));
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .filter(|symbol| !symbol.trim().is_empty())
+            .collect::<String>();
+        assert!(content.contains("拍卖：Qwen3"));
+        assert!(content.contains("当前最高价"));
+        assert!(content.contains("下一最低价"));
+        assert!(content.contains("轮到：Player"));
+    }
+
+    #[test]
+    fn loading_an_auction_advances_bot_bidders() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("tensor-ui-load-auction-{unique}"));
+        let store = SaveStore::at(root);
+        let mut game = Game::new(GameConfig::default()).unwrap();
+        game.phase = Phase::OfferPurchase { tile: 1 };
+        game.apply(Action::Decline).unwrap();
+        game.apply(Action::AuctionBid(10)).unwrap();
+        assert_eq!(game.auction_actor(), Some(1));
+        store.create("auction", &game).unwrap();
+
+        let mut app = App::new(store);
+        app.refresh_saves();
+        app.load_selected();
+
+        assert!(
+            app.game.as_ref().unwrap().phase != Phase::Auction
+                || app.game.as_ref().unwrap().auction_actor() == Some(0)
+        );
     }
 
     #[test]

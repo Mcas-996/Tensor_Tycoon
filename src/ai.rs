@@ -44,10 +44,6 @@ pub fn drive_bots(game: &mut Game) -> Result<(), GameError> {
         }
         match game.phase {
             Phase::AwaitRoll => {
-                if game.players[player].cooldown_turns > 0 && game.players[player].bypass_tokens > 0
-                {
-                    game.apply(Action::UseBypass)?;
-                }
                 game.apply(Action::Roll)?;
             }
             Phase::OfferPurchase { tile } => {
