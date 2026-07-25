@@ -201,7 +201,7 @@ impl SaveStore {
                 }),
             }
         }
-        saves.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        saves.sort_by_key(|save| std::cmp::Reverse(save.updated_at_ms));
         Ok(saves)
     }
 
