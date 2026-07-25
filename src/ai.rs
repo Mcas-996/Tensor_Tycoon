@@ -1,4 +1,4 @@
-use crate::game::{asset, Action, AssetKind, Game, GameError, Phase, ASSETS};
+use crate::game::{model, Action, Game, GameError, Phase, MODELS};
 
 const PURCHASE_RESERVE: i32 = 200;
 const IMPROVEMENT_RESERVE: i32 = 300;
@@ -16,24 +16,15 @@ pub fn drive_bots(game: &mut Game) -> Result<(), GameError> {
                 return Ok(());
             }
             let auction = game.auction.as_ref().unwrap();
-            let definition = asset(auction.tile).unwrap();
-            let completion_bonus = match definition.kind {
-                AssetKind::Street { group } => {
-                    let owned = ASSETS
-                        .iter()
-                        .filter(|a| matches!(a.kind, AssetKind::Street { group: g } if g == group))
-                        .filter(|a| game.assets[&a.tile].owner == Some(actor))
-                        .count();
-                    if owned > 0 {
-                        definition.price / 2
-                    } else {
-                        0
-                    }
-                }
-                _ => 0,
+            let definition = model(auction.tile).unwrap();
+            let owned = game.family_model_count(actor, definition.family);
+            let completion_bonus = if owned == 2 {
+                definition.price() / 2
+            } else {
+                0
             };
-            let cap = (definition.price + completion_bonus)
-                .min(game.players[actor].cash.saturating_sub(PURCHASE_RESERVE));
+            let cap = (definition.price() + completion_bonus)
+                .min(game.players[actor].credits.saturating_sub(PURCHASE_RESERVE));
             let minimum = if auction.high_bid == 0 {
                 10
             } else {
@@ -53,14 +44,15 @@ pub fn drive_bots(game: &mut Game) -> Result<(), GameError> {
         }
         match game.phase {
             Phase::AwaitRoll => {
-                if game.players[player].jail_turns > 0 && game.players[player].get_out_cards > 0 {
-                    game.apply(Action::UseJailCard)?;
+                if game.players[player].cooldown_turns > 0 && game.players[player].bypass_tokens > 0
+                {
+                    game.apply(Action::UseBypass)?;
                 }
                 game.apply(Action::Roll)?;
             }
             Phase::OfferPurchase { tile } => {
-                let price = asset(tile).unwrap().price;
-                if game.players[player].cash - price >= PURCHASE_RESERVE {
+                let price = model(tile).unwrap().price();
+                if game.players[player].credits - price >= PURCHASE_RESERVE {
                     game.apply(Action::Buy)?;
                 } else {
                     game.apply(Action::Decline)?;
@@ -82,33 +74,31 @@ pub fn drive_bots(game: &mut Game) -> Result<(), GameError> {
 }
 
 fn management_action(game: &Game, player: usize) -> Option<Action> {
-    for definition in &ASSETS {
-        let state = &game.assets[&definition.tile];
-        if state.owner == Some(player) && state.mortgaged {
-            let cost = (definition.mortgage_value() * 110 + 99) / 100;
-            if game.players[player].cash - cost >= IMPROVEMENT_RESERVE {
-                return Some(Action::Unmortgage(definition.tile));
+    for definition in &MODELS {
+        let state = &game.models[&definition.tile];
+        if state.owner == Some(player) && state.archived {
+            let cost = (definition.archive_value() * 110 + 99) / 100;
+            if game.players[player].credits - cost >= IMPROVEMENT_RESERVE {
+                return Some(Action::Restore(definition.tile));
             }
         }
     }
-    for definition in &ASSETS {
-        let AssetKind::Street { group } = definition.kind else {
-            continue;
-        };
-        let state = &game.assets[&definition.tile];
+    for definition in &MODELS {
+        let state = &game.models[&definition.tile];
         if state.owner == Some(player)
-            && game.owns_group(player, group)
-            && state.houses < 4
-            && game.players[player].cash - definition.house_cost >= IMPROVEMENT_RESERVE
+            && game.has_tensor_access(player, definition.family)
+            && state.tensors < 4
+            && game.players[player].credits - definition.tensor_cost >= IMPROVEMENT_RESERVE
         {
-            let min = ASSETS
+            let min = MODELS
                 .iter()
-                .filter(|a| matches!(a.kind, AssetKind::Street { group: g } if g == group))
-                .map(|a| game.assets[&a.tile].houses)
+                .filter(|a| a.family == definition.family)
+                .filter(|a| game.models[&a.tile].owner == Some(player))
+                .map(|a| game.models[&a.tile].tensors)
                 .min()
                 .unwrap_or(0);
-            if state.houses == min {
-                return Some(Action::Build(definition.tile));
+            if state.tensors == min {
+                return Some(Action::AllocateTensor(definition.tile));
             }
         }
     }

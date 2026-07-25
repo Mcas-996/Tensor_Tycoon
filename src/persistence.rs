@@ -1,4 +1,4 @@
-use crate::game::{Game, Language};
+use crate::game::{Game, GameLog, Language, ModelState, Phase, MODELS};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -6,7 +6,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveEnvelope {
@@ -81,8 +81,12 @@ pub struct SaveStore {
 
 impl SaveStore {
     pub fn discover() -> Result<Self, SaveError> {
-        let project = ProjectDirs::from("org", "monopoly-cli", "monopoly_cli")
+        let project = ProjectDirs::from("org", "tensor-tycoon", "tensor_tycoon")
             .ok_or_else(|| SaveError::Io(io::Error::other("user data directory is unavailable")))?;
+        let legacy = ProjectDirs::from("org", "monopoly-cli", "monopoly_cli").ok_or_else(|| {
+            SaveError::Io(io::Error::other("legacy data directory is unavailable"))
+        })?;
+        migrate_legacy_root(legacy.data_local_dir(), project.data_local_dir())?;
         Ok(Self {
             root: project.data_local_dir().to_path_buf(),
         })
@@ -152,9 +156,13 @@ impl SaveStore {
         if !path.exists() {
             return Err(SaveError::NotFound);
         }
-        let envelope: SaveEnvelope = serde_json::from_slice(&fs::read(path)?)?;
-        if envelope.schema_version != SAVE_VERSION {
+        let mut envelope: SaveEnvelope = serde_json::from_slice(&fs::read(path)?)?;
+        if !matches!(envelope.schema_version, 1 | SAVE_VERSION) {
             return Err(SaveError::UnsupportedVersion(envelope.schema_version));
+        }
+        if envelope.schema_version == 1 {
+            migrate_v1_game(&mut envelope.game);
+            envelope.schema_version = SAVE_VERSION;
         }
         Ok(envelope)
     }
@@ -181,7 +189,7 @@ impl SaveStore {
                     name: envelope.name,
                     updated_at_ms: envelope.updated_at_ms,
                     round: envelope.game.round,
-                    error: (envelope.schema_version != SAVE_VERSION)
+                    error: (!matches!(envelope.schema_version, 1 | SAVE_VERSION))
                         .then(|| format!("version {}", envelope.schema_version)),
                 }),
                 Err(error) => saves.push(SaveSummary {
@@ -252,6 +260,108 @@ impl SaveStore {
     }
 }
 
+fn migrate_v1_game(game: &mut Game) {
+    let old_models = std::mem::take(&mut game.models);
+    game.models = MODELS
+        .iter()
+        .map(|definition| (definition.tile, ModelState::default()))
+        .collect();
+    for (old_tile, state) in old_models {
+        if let Some(new_tile) = migrate_v1_tile(old_tile) {
+            game.models.insert(new_tile, state);
+        }
+    }
+
+    for player in &mut game.players {
+        player.position = migrate_v1_position(player.position);
+    }
+    if let Phase::OfferPurchase { tile } = &mut game.phase {
+        *tile = migrate_v1_tile(*tile).unwrap_or(*tile);
+    }
+    if let Some(auction) = &mut game.auction {
+        auction.tile = migrate_v1_tile(auction.tile).unwrap_or(auction.tile);
+    }
+    for tile in &mut game.pending_bank_auctions {
+        *tile = migrate_v1_tile(*tile).unwrap_or(*tile);
+    }
+    for log in &mut game.logs {
+        match log {
+            GameLog::Moved { position, .. } => {
+                *position = migrate_v1_position(*position);
+            }
+            GameLog::Bought { tile, .. }
+            | GameLog::TensorAllocated { tile, .. }
+            | GameLog::ReleasedTensor { tile, .. }
+            | GameLog::Archived { tile, .. }
+            | GameLog::Restored { tile, .. } => {
+                *tile = migrate_v1_tile(*tile).unwrap_or(*tile);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn migrate_v1_tile(tile: usize) -> Option<usize> {
+    Some(match tile {
+        1 => 1,
+        3 => 4,
+        6 => 7,
+        7 => 8,
+        8 => 10,
+        9 => 11,
+        11 => 13,
+        13 => 16,
+        16 => 19,
+        17 => 20,
+        18 => 22,
+        19 => 23,
+        _ => return None,
+    })
+}
+
+fn migrate_v1_position(position: usize) -> usize {
+    const POSITIONS: [usize; 20] = [
+        0, 1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 22, 23,
+    ];
+    POSITIONS.get(position).copied().unwrap_or(position % 24)
+}
+
+fn migrate_legacy_root(legacy: &std::path::Path, current: &std::path::Path) -> io::Result<()> {
+    if current.exists() || !legacy.exists() {
+        return Ok(());
+    }
+    let parent = current
+        .parent()
+        .ok_or_else(|| io::Error::other("data directory has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let name = current
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tensor_tycoon");
+    let temp = parent.join(format!(
+        ".{name}.migrating-{}-{}",
+        std::process::id(),
+        SaveStore::now_ms()
+    ));
+    copy_dir_recursive(legacy, &temp)?;
+    fs::rename(temp, current)?;
+    Ok(())
+}
+
+fn copy_dir_recursive(source: &std::path::Path, destination: &std::path::Path) -> io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let destination_path = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &destination_path)?;
+        } else {
+            fs::copy(entry.path(), destination_path)?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_name(name: &str) -> Result<(), SaveError> {
     let count = name.trim().chars().count();
     if !(1..=32).contains(&count) {
@@ -279,7 +389,7 @@ mod tests {
 
     fn temp_store() -> SaveStore {
         let path = std::env::temp_dir().join(format!(
-            "monopoly-cli-test-{}-{}-{}",
+            "tensor-tycoon-test-{}-{}-{}",
             std::process::id(),
             SaveStore::now_ms(),
             TEST_ID.fetch_add(1, Ordering::Relaxed)
@@ -317,5 +427,134 @@ mod tests {
         assert_eq!(saves[0].name, "Renamed");
         assert_eq!(saves[0].round, 7);
         store.delete(&id).unwrap();
+    }
+
+    #[test]
+    fn migrates_v1_board_state_and_serialized_names() {
+        let store = temp_store();
+        fs::create_dir_all(store.saves_dir()).unwrap();
+        let mut game = serde_json::to_value(Game::new(GameConfig::default()).unwrap()).unwrap();
+        let object = game.as_object_mut().unwrap();
+
+        let current_models = object.remove("models").unwrap();
+        let current_models = current_models.as_object().unwrap();
+        let mut legacy_models = serde_json::Map::new();
+        for (old_tile, new_tile) in [
+            (1, 1),
+            (3, 4),
+            (6, 7),
+            (7, 8),
+            (8, 10),
+            (9, 11),
+            (11, 13),
+            (13, 16),
+            (16, 19),
+            (17, 20),
+            (18, 22),
+            (19, 23),
+        ] {
+            let mut state = current_models[&new_tile.to_string()].clone();
+            let state_object = state.as_object_mut().unwrap();
+            let tensors = state_object.remove("tensors").unwrap();
+            let archived = state_object.remove("archived").unwrap();
+            state_object.insert("houses".into(), tensors);
+            state_object.insert("mortgaged".into(), archived);
+            legacy_models.insert(old_tile.to_string(), state);
+        }
+        legacy_models["1"]["owner"] = serde_json::json!(0);
+        legacy_models["1"]["houses"] = serde_json::json!(2);
+        object.insert("assets".into(), legacy_models.into());
+
+        for player in object["players"].as_array_mut().unwrap() {
+            let player = player.as_object_mut().unwrap();
+            let credits = player.remove("credits").unwrap();
+            let cooldown_turns = player.remove("cooldown_turns").unwrap();
+            let bypass_tokens = player.remove("bypass_tokens").unwrap();
+            player.insert("cash".into(), credits);
+            player.insert("jail_turns".into(), cooldown_turns);
+            player.insert("get_out_cards".into(), bypass_tokens);
+            player.insert("position".into(), serde_json::json!(19));
+        }
+        for card in object["deck"].as_array_mut().unwrap() {
+            if card == "AdvanceHub" {
+                *card = serde_json::json!("AdvanceStart");
+            } else if card == "AdvanceFlagship" {
+                *card = serde_json::json!("AdvanceStation");
+            } else if card == "EnterCooldown" {
+                *card = serde_json::json!("GoToJail");
+            } else if card == "BypassToken" {
+                *card = serde_json::json!("GetOutOfJail");
+            }
+        }
+        object.insert(
+            "phase".into(),
+            serde_json::json!({"OfferPurchase": {"tile": 19}}),
+        );
+        object.insert("pending_bank_auctions".into(), serde_json::json!([3]));
+        object.insert(
+            "logs".into(),
+            serde_json::json!([
+                {"Moved": {"player": 0, "position": 19}},
+                {"Built": {"player": 0, "tile": 1, "houses": 2}}
+            ]),
+        );
+
+        let envelope = serde_json::json!({
+            "schema_version": 1,
+            "id": "abc",
+            "name": "Legacy",
+            "updated_at_ms": 1,
+            "game": game
+        });
+        fs::write(
+            store.path_for("abc"),
+            serde_json::to_vec_pretty(&envelope).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = store.load("abc").unwrap();
+        assert_eq!(loaded.schema_version, SAVE_VERSION);
+        assert_eq!(loaded.game.players[0].position, 23);
+        assert_eq!(loaded.game.phase, Phase::OfferPurchase { tile: 23 });
+        assert_eq!(loaded.game.pending_bank_auctions, vec![4]);
+        assert_eq!(loaded.game.models[&1].owner, Some(0));
+        assert_eq!(loaded.game.models[&1].tensors, 2);
+        assert_eq!(loaded.game.models.len(), 16);
+        assert_eq!(
+            loaded.game.logs[0],
+            GameLog::Moved {
+                player: 0,
+                position: 23
+            }
+        );
+    }
+
+    #[test]
+    fn copies_legacy_data_once_without_removing_it() {
+        let base = std::env::temp_dir().join(format!(
+            "tensor-data-migration-{}-{}",
+            std::process::id(),
+            TEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let legacy = base.join("legacy");
+        let current = base.join("current");
+        fs::create_dir_all(legacy.join("saves")).unwrap();
+        fs::write(legacy.join("config.json"), b"legacy-config").unwrap();
+        fs::write(legacy.join("saves").join("abc.json"), b"legacy-save").unwrap();
+
+        migrate_legacy_root(&legacy, &current).unwrap();
+        assert_eq!(
+            fs::read(current.join("config.json")).unwrap(),
+            b"legacy-config"
+        );
+        assert_eq!(
+            fs::read(current.join("saves").join("abc.json")).unwrap(),
+            b"legacy-save"
+        );
+        assert!(legacy.join("config.json").exists());
+
+        fs::write(legacy.join("new.txt"), b"do-not-merge").unwrap();
+        migrate_legacy_root(&legacy, &current).unwrap();
+        assert!(!current.join("new.txt").exists());
     }
 }

@@ -1,8 +1,8 @@
-use crate::game::{asset, Card, Game, GameLog, Language};
+use crate::game::{model, Card, Game, GameLog, Language};
 
 pub fn text(language: Language, key: &str) -> &'static str {
     let zh = match key {
-        "title" => "终端大富翁",
+        "title" => "张量大亨",
         "new_game" => "新游戏",
         "load_game" => "存档管理",
         "language" => "切换语言",
@@ -14,7 +14,7 @@ pub fn text(language: Language, key: &str) -> &'static str {
         "start" => "开始游戏",
         "back" => "返回",
         "round" => "回合",
-        "cash" => "现金",
+        "credits" => "算力点数",
         "worth" => "净资产",
         "phase" => "阶段",
         "event_log" => "事件日志",
@@ -26,18 +26,18 @@ pub fn text(language: Language, key: &str) -> &'static str {
         "resize" => "终端至少需要 80×24，请调整窗口大小",
         "confirm_quit" => "再次按 q 确认退出",
         "confirm_delete" => "再次按 d 确认删除",
-        "assets" => "资产管理",
+        "models" => "模型管理",
         "controls" => "热键",
-        "start_tile" => "起点",
-        "event_tile" => "事件",
-        "tax_tile" => "税费",
-        "jail_tile" => "监狱/探访",
-        "free_tile" => "免费停车",
-        "go_jail_tile" => "前往监狱",
+        "hub_tile" => "Hub",
+        "seed_tile" => "随机种子",
+        "compute_tile" => "算力账单",
+        "cooldown_tile" => "冷却区",
+        "cache_tile" => "缓存命中",
+        "overflow_tile" => "上下文溢出",
         _ => "?",
     };
     let en = match key {
-        "title" => "Terminal Tycoon",
+        "title" => "Tensor Tycoon",
         "new_game" => "New game",
         "load_game" => "Save manager",
         "language" => "Switch language",
@@ -49,7 +49,7 @@ pub fn text(language: Language, key: &str) -> &'static str {
         "start" => "Start game",
         "back" => "Back",
         "round" => "Round",
-        "cash" => "Cash",
+        "credits" => "Credits",
         "worth" => "Net worth",
         "phase" => "Phase",
         "event_log" => "Event log",
@@ -61,14 +61,14 @@ pub fn text(language: Language, key: &str) -> &'static str {
         "resize" => "Terminal must be at least 80×24; please resize",
         "confirm_quit" => "Press q again to quit",
         "confirm_delete" => "Press d again to delete",
-        "assets" => "Asset manager",
+        "models" => "Model manager",
         "controls" => "Controls",
-        "start_tile" => "Start",
-        "event_tile" => "Event",
-        "tax_tile" => "Tax",
-        "jail_tile" => "Jail / Visiting",
-        "free_tile" => "Free Parking",
-        "go_jail_tile" => "Go to Jail",
+        "hub_tile" => "Hub",
+        "seed_tile" => "Random Seed",
+        "compute_tile" => "Compute Bill",
+        "cooldown_tile" => "Cooldown",
+        "cache_tile" => "Cache Hit",
+        "overflow_tile" => "Context Overflow",
         _ => "?",
     };
     match language {
@@ -79,18 +79,24 @@ pub fn text(language: Language, key: &str) -> &'static str {
 
 pub fn card_name(language: Language, card: Card) -> &'static str {
     let (zh, en) = match card {
-        Card::Gain50 => ("社区奖励 +50", "Community award +50"),
-        Card::Gain100 => ("银行分红 +100", "Bank dividend +100"),
-        Card::Gain150 => ("幸运抽奖 +150", "Lucky draw +150"),
-        Card::Pay50 => ("医疗费用 -50", "Medical fee -50"),
-        Card::Pay100 => ("城市维护费 -100", "City maintenance -100"),
-        Card::Collect25Each => ("每人支付你 25", "Collect 25 from everyone"),
-        Card::Pay25Each => ("向每人支付 25", "Pay everyone 25"),
-        Card::AdvanceStart => ("前往起点", "Advance to Start"),
-        Card::AdvanceStation => ("前往下一车站", "Advance to next station"),
-        Card::BackThree => ("后退三格", "Move back three"),
-        Card::GoToJail => ("直接入狱", "Go directly to jail"),
-        Card::GetOutOfJail => ("免狱卡", "Get out of jail"),
+        Card::Gain50 => ("数据缓存返还 +50", "Dataset cache rebate +50"),
+        Card::Gain100 => ("推理额度奖励 +100", "Inference credit grant +100"),
+        Card::Gain150 => ("基准测试奖金 +150", "Benchmark prize +150"),
+        Card::Pay50 => ("存储账单 -50", "Storage bill -50"),
+        Card::Pay100 => ("GPU 维护费 -100", "GPU maintenance -100"),
+        Card::Collect25Each => (
+            "每位玩家贡献 25 点数",
+            "Collect 25 credits from each player",
+        ),
+        Card::Pay25Each => (
+            "向每位玩家分配 25 点数",
+            "Allocate 25 credits to each player",
+        ),
+        Card::AdvanceHub => ("返回 Hub", "Return to Hub"),
+        Card::AdvanceFlagship => ("前往下一旗舰模型", "Advance to next flagship"),
+        Card::BackThree => ("回滚三个提交", "Roll back three commits"),
+        Card::EnterCooldown => ("触发限流，进入冷却区", "Rate limited: enter cooldown"),
+        Card::BypassToken => ("获得绕过令牌", "Receive a bypass token"),
     };
     match language {
         Language::ZhCn => zh,
@@ -142,7 +148,7 @@ pub fn log_line(game: &Game, language: Language, log: &GameLog) -> String {
             "{} 以 {} 买下 {}",
             player(*id),
             price,
-            asset(*tile).map(|a| a.name(language)).unwrap_or("?")
+            model(*tile).map(|a| a.name(language)).unwrap_or("?")
         ),
         (
             Language::En,
@@ -154,20 +160,29 @@ pub fn log_line(game: &Game, language: Language, log: &GameLog) -> String {
         ) => format!(
             "{} bought {} for {}",
             player(*id),
-            asset(*tile).map(|a| a.name(language)).unwrap_or("?"),
+            model(*tile).map(|a| a.name(language)).unwrap_or("?"),
             price
         ),
-        (Language::ZhCn, GameLog::Rent { from, to, amount }) => {
-            format!("{} 向 {} 支付租金 {}", player(*from), player(*to), amount)
+        (Language::ZhCn, GameLog::UsageFee { from, to, amount }) => {
+            format!("{} 向 {} 支付使用费 {}", player(*from), player(*to), amount)
         }
-        (Language::En, GameLog::Rent { from, to, amount }) => {
-            format!("{} paid {} rent to {}", player(*from), amount, player(*to))
+        (Language::En, GameLog::UsageFee { from, to, amount }) => {
+            format!(
+                "{} paid {} usage credits to {}",
+                player(*from),
+                amount,
+                player(*to)
+            )
         }
         (_, GameLog::Drew { player: id, card }) => {
             format!("{}: {}", player(*id), card_name(language, *card))
         }
-        (Language::ZhCn, GameLog::Jailed { player: id }) => format!("{} 入狱", player(*id)),
-        (Language::En, GameLog::Jailed { player: id }) => format!("{} went to jail", player(*id)),
+        (Language::ZhCn, GameLog::CooldownStarted { player: id }) => {
+            format!("{} 进入冷却区", player(*id))
+        }
+        (Language::En, GameLog::CooldownStarted { player: id }) => {
+            format!("{} entered cooldown", player(*id))
+        }
         (Language::ZhCn, GameLog::Bankrupt { player: id, .. }) => format!("{} 破产", player(*id)),
         (Language::En, GameLog::Bankrupt { player: id, .. }) => {
             format!("{} is bankrupt", player(*id))
@@ -188,43 +203,45 @@ pub fn log_line(game: &Game, language: Language, log: &GameLog) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        (_, GameLog::Cash { player: id, amount }) => format!("{} {:+}", player(*id), amount),
-        (_, GameLog::Tax { player: id, amount }) => format!("{} tax -{}", player(*id), amount),
+        (_, GameLog::Credits { player: id, amount }) => format!("{} {:+}", player(*id), amount),
+        (_, GameLog::ComputeBill { player: id, amount }) => {
+            format!("{} compute -{}", player(*id), amount)
+        }
         (
             _,
-            GameLog::Built {
+            GameLog::TensorAllocated {
                 player: id,
                 tile,
-                houses,
+                tensors,
             },
         ) => format!(
-            "{} {} 🏠{}",
+            "{} {} T{}",
             player(*id),
-            asset(*tile).map(|a| a.name(language)).unwrap_or("?"),
-            houses
+            model(*tile).map(|a| a.name(language)).unwrap_or("?"),
+            tensors
         ),
         (
             _,
-            GameLog::SoldHouse {
+            GameLog::ReleasedTensor {
                 player: id,
                 tile,
-                houses,
+                tensors,
             },
         ) => format!(
-            "{} {} 🏠{}",
+            "{} {} T{}",
             player(*id),
-            asset(*tile).map(|a| a.name(language)).unwrap_or("?"),
-            houses
+            model(*tile).map(|a| a.name(language)).unwrap_or("?"),
+            tensors
         ),
-        (_, GameLog::Mortgaged { player: id, tile }) => format!(
-            "{} mortgage {}",
+        (_, GameLog::Archived { player: id, tile }) => format!(
+            "{} archived {}",
             player(*id),
-            asset(*tile).map(|a| a.name(language)).unwrap_or("?")
+            model(*tile).map(|a| a.name(language)).unwrap_or("?")
         ),
-        (_, GameLog::Unmortgaged { player: id, tile }) => format!(
-            "{} unmortgage {}",
+        (_, GameLog::Restored { player: id, tile }) => format!(
+            "{} restored {}",
             player(*id),
-            asset(*tile).map(|a| a.name(language)).unwrap_or("?")
+            model(*tile).map(|a| a.name(language)).unwrap_or("?")
         ),
     }
 }

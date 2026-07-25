@@ -1,5 +1,5 @@
 use crate::ai::drive_bots;
-use crate::game::{asset, Action, Game, GameConfig, Language, Phase, Space, ASSETS, BOARD};
+use crate::game::{model, Action, Game, GameConfig, Language, Phase, Space, BOARD, MODELS};
 use crate::i18n::{log_line, text};
 use crate::persistence::{Preferences, SaveStore, SaveSummary};
 use crossterm::{
@@ -18,8 +18,8 @@ use ratatui::{
 use std::io::{self, Stdout};
 use std::time::Duration;
 
-const MIN_WIDTH: u16 = 80;
-const MIN_HEIGHT: u16 = 24;
+const MIN_WIDTH: u16 = 98;
+const MIN_HEIGHT: u16 = 28;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -33,7 +33,7 @@ enum Screen {
 enum Overlay {
     None,
     Command,
-    Assets,
+    Models,
     Help,
 }
 
@@ -69,7 +69,7 @@ pub struct App {
     store: SaveStore,
     saves: Vec<SaveSummary>,
     save_selection: usize,
-    asset_selection: usize,
+    model_selection: usize,
     current_save: Option<(String, String)>,
 }
 
@@ -90,7 +90,7 @@ impl App {
             store,
             saves: Vec::new(),
             save_selection: 0,
-            asset_selection: 0,
+            model_selection: 0,
             current_save: None,
         }
     }
@@ -243,8 +243,8 @@ impl App {
             self.handle_command_key(key);
             return;
         }
-        if self.overlay == Overlay::Assets {
-            self.handle_assets_key(key);
+        if self.overlay == Overlay::Models {
+            self.handle_models_key(key);
             return;
         }
         if self.overlay == Overlay::Help {
@@ -341,8 +341,8 @@ impl App {
             KeyCode::Char('?') => self.overlay = Overlay::Help,
             KeyCode::Char('l') => self.toggle_language(),
             KeyCode::Char('m') => {
-                self.overlay = Overlay::Assets;
-                self.asset_selection = 0;
+                self.overlay = Overlay::Models;
+                self.model_selection = 0;
             }
             KeyCode::Char('s') => {
                 if self.current_save.is_some() {
@@ -386,32 +386,32 @@ impl App {
         }
     }
 
-    fn handle_assets_key(&mut self, key: KeyEvent) {
+    fn handle_models_key(&mut self, key: KeyEvent) {
         let owned = self.owned_tiles();
         match key.code {
             KeyCode::Esc | KeyCode::Char('m') => self.overlay = Overlay::None,
-            KeyCode::Up => self.asset_selection = self.asset_selection.saturating_sub(1),
+            KeyCode::Up => self.model_selection = self.model_selection.saturating_sub(1),
             KeyCode::Down => {
-                self.asset_selection = (self.asset_selection + 1).min(owned.len().saturating_sub(1))
+                self.model_selection = (self.model_selection + 1).min(owned.len().saturating_sub(1))
             }
-            KeyCode::Char('b') => {
-                if let Some(tile) = owned.get(self.asset_selection) {
-                    self.apply_action(Action::Build(*tile));
+            KeyCode::Char('+') | KeyCode::Char('t') => {
+                if let Some(tile) = owned.get(self.model_selection) {
+                    self.apply_action(Action::AllocateTensor(*tile));
                 }
             }
-            KeyCode::Char('x') => {
-                if let Some(tile) = owned.get(self.asset_selection) {
-                    self.apply_action(Action::SellHouse(*tile));
+            KeyCode::Char('-') | KeyCode::Char('x') => {
+                if let Some(tile) = owned.get(self.model_selection) {
+                    self.apply_action(Action::ReleaseTensor(*tile));
                 }
             }
-            KeyCode::Char('g') => {
-                if let Some(tile) = owned.get(self.asset_selection) {
-                    self.apply_action(Action::Mortgage(*tile));
+            KeyCode::Char('a') => {
+                if let Some(tile) = owned.get(self.model_selection) {
+                    self.apply_action(Action::Archive(*tile));
                 }
             }
-            KeyCode::Char('u') => {
-                if let Some(tile) = owned.get(self.asset_selection) {
-                    self.apply_action(Action::Unmortgage(*tile));
+            KeyCode::Char('r') => {
+                if let Some(tile) = owned.get(self.model_selection) {
+                    self.apply_action(Action::Restore(*tile));
                 }
             }
             _ => {}
@@ -422,9 +422,9 @@ impl App {
         self.game
             .as_ref()
             .map(|game| {
-                ASSETS
+                MODELS
                     .iter()
-                    .filter(|definition| game.assets[&definition.tile].owner == Some(0))
+                    .filter(|definition| game.models[&definition.tile].owner == Some(0))
                     .map(|definition| definition.tile)
                     .collect()
             })
@@ -472,34 +472,34 @@ impl App {
                 }
             }
             "end" => self.apply_action(Action::EndTurn),
-            "payjail" => self.apply_action(Action::PayJail),
-            "usecard" => self.apply_action(Action::UseJailCard),
-            "build" => {
+            "paycooldown" => self.apply_action(Action::PayCooldown),
+            "usebypass" => self.apply_action(Action::UseBypass),
+            "tensor" => {
                 if let Some(tile) = tile() {
-                    self.apply_action(Action::Build(tile));
+                    self.apply_action(Action::AllocateTensor(tile));
                 } else {
-                    self.message = "build <tile>".into();
+                    self.message = "tensor <tile>".into();
                 }
             }
-            "sell" => {
+            "untensor" => {
                 if let Some(tile) = tile() {
-                    self.apply_action(Action::SellHouse(tile));
+                    self.apply_action(Action::ReleaseTensor(tile));
                 } else {
-                    self.message = "sell <tile>".into();
+                    self.message = "untensor <tile>".into();
                 }
             }
-            "mortgage" => {
+            "archive" => {
                 if let Some(tile) = tile() {
-                    self.apply_action(Action::Mortgage(tile));
+                    self.apply_action(Action::Archive(tile));
                 } else {
-                    self.message = "mortgage <tile>".into();
+                    self.message = "archive <tile>".into();
                 }
             }
-            "unmortgage" => {
+            "restore" => {
                 if let Some(tile) = tile() {
-                    self.apply_action(Action::Unmortgage(tile));
+                    self.apply_action(Action::Restore(tile));
                 } else {
-                    self.message = "unmortgage <tile>".into();
+                    self.message = "restore <tile>".into();
                 }
             }
             "save" => {
@@ -625,7 +625,7 @@ fn render(frame: &mut Frame, app: &App) {
     }
     match app.overlay {
         Overlay::Command => render_command(frame, app),
-        Overlay::Assets => render_assets(frame, app),
+        Overlay::Models => render_models(frame, app),
         Overlay::Help => render_help(frame, app),
         Overlay::None => {}
     }
@@ -785,16 +785,16 @@ fn render_game(frame: &mut Frame, app: &App) {
             };
             let state = if player.bankrupt {
                 "✕"
-            } else if player.jail_turns > 0 {
+            } else if player.cooldown_turns > 0 {
                 "⚿"
             } else {
                 ""
             };
             Line::from(format!(
-                "{marker}{} {}  ${}  {}:{}",
+                "{marker}{} {}  ¢{}  {}:{}",
                 player.id + 1,
                 player.name,
-                player.cash,
+                player.credits,
                 text(app.language, "worth"),
                 game.net_worth(player.id)
             ))
@@ -849,15 +849,10 @@ fn render_game(frame: &mut Frame, app: &App) {
 }
 
 fn render_board(frame: &mut Frame, app: &App, game: &Game, area: Rect) {
-    let cell_w = area.width / 6;
-    let cell_h = area.height / 6;
+    let cell_w = area.width / 7;
+    let cell_h = area.height / 7;
     for (index, space) in BOARD.iter().enumerate() {
-        let (column, row) = match index {
-            0..=5 => (index as u16, 0),
-            6..=9 => (5, index as u16 - 5),
-            10..=15 => (15 - index as u16, 5),
-            _ => (0, 20 - index as u16),
-        };
+        let (column, row) = board_coordinates(index).expect("board index must be on perimeter");
         let rect = Rect::new(
             area.x + column * cell_w,
             area.y + row * cell_h,
@@ -865,13 +860,13 @@ fn render_board(frame: &mut Frame, app: &App, game: &Game, area: Rect) {
             cell_h.max(1),
         );
         let name = match space {
-            Space::Start => text(app.language, "start_tile"),
-            Space::Event => text(app.language, "event_tile"),
-            Space::Tax(_) => text(app.language, "tax_tile"),
-            Space::Jail => text(app.language, "jail_tile"),
-            Space::FreeParking => text(app.language, "free_tile"),
-            Space::GoToJail => text(app.language, "go_jail_tile"),
-            Space::Asset(tile) => asset(*tile).unwrap().name(app.language),
+            Space::Hub => text(app.language, "hub_tile"),
+            Space::RandomSeed => text(app.language, "seed_tile"),
+            Space::ComputeBill(_) => text(app.language, "compute_tile"),
+            Space::Cooldown => text(app.language, "cooldown_tile"),
+            Space::CacheHit => text(app.language, "cache_tile"),
+            Space::ContextOverflow => text(app.language, "overflow_tile"),
+            Space::Model(tile) => model(*tile).unwrap().name(app.language),
         };
         let players = game
             .players
@@ -881,28 +876,30 @@ fn render_board(frame: &mut Frame, app: &App, game: &Game, area: Rect) {
             .collect::<Vec<_>>()
             .join(" ");
         let detail = match space {
-            Space::Asset(tile) => {
-                let state = &game.assets[tile];
+            Space::Model(tile) => {
+                let state = &game.models[tile];
+                let definition = model(*tile).unwrap();
                 let owner = state
                     .owner
                     .map(|id| format!("P{}", id + 1))
-                    .unwrap_or_else(|| format!("${}", asset(*tile).unwrap().price));
+                    .unwrap_or_else(|| format!("¢{}", definition.price()));
                 format!(
-                    "{owner} {}",
-                    if state.mortgaged {
+                    "{} {owner} {}",
+                    format_parameters(definition.parameter_count),
+                    if state.archived {
                         "M".into()
-                    } else if state.houses > 0 {
-                        format!("H{}", state.houses)
+                    } else if state.tensors > 0 {
+                        format!("T{}", state.tensors)
                     } else {
                         String::new()
                     }
                 )
             }
-            Space::Tax(amount) => format!("-${amount}"),
+            Space::ComputeBill(amount) => format!("-¢{amount}"),
             _ => String::new(),
         };
         let owner_style = match space {
-            Space::Asset(tile) => game.assets[tile]
+            Space::Model(tile) => game.models[tile]
                 .owner
                 .map(player_color)
                 .unwrap_or(Color::DarkGray),
@@ -919,12 +916,12 @@ fn render_board(frame: &mut Frame, app: &App, game: &Game, area: Rect) {
             rect,
         );
     }
-    let center = Rect::new(area.x + cell_w, area.y + cell_h, cell_w * 4, cell_h * 4);
+    let center = Rect::new(area.x + cell_w, area.y + cell_h, cell_w * 5, cell_h * 5);
     let controls = match game.phase {
-        Phase::AwaitRoll => "r roll · : command · s save · m assets",
+        Phase::AwaitRoll => "r roll · : command · s save · m models",
         Phase::OfferPurchase { .. } => "p buy · a auction · : command",
         Phase::Auction => "b bid +10 · a pass · : bid <amount>",
-        Phase::Manage => "m assets · e end turn · s save",
+        Phase::Manage => "m models · e end turn · s save",
         Phase::GameOver => "q quit · : save <name>",
     };
     let winner = if game.phase == Phase::GameOver {
@@ -952,8 +949,29 @@ fn render_board(frame: &mut Frame, app: &App, game: &Game, area: Rect) {
     );
 }
 
+fn board_coordinates(index: usize) -> Option<(u16, u16)> {
+    match index {
+        0..=6 => Some((index as u16, 0)),
+        7..=11 => Some((6, index as u16 - 6)),
+        12..=18 => Some((18 - index as u16, 6)),
+        19..=23 => Some((0, 24 - index as u16)),
+        _ => None,
+    }
+}
+
 fn player_color(id: usize) -> Color {
     [Color::Cyan, Color::Magenta, Color::Green, Color::Yellow][id % 4]
+}
+
+fn format_parameters(parameter_count: u64) -> String {
+    let billions = parameter_count as f64 / 1_000_000_000.0;
+    if billions >= 1_000.0 {
+        format!("{:.0}T", billions / 1_000.0)
+    } else if billions.fract() == 0.0 {
+        format!("{billions:.0}B")
+    } else {
+        format!("{billions:.1}B")
+    }
 }
 
 fn render_command(frame: &mut Frame, app: &App) {
@@ -969,45 +987,42 @@ fn render_command(frame: &mut Frame, app: &App) {
     );
 }
 
-fn render_assets(frame: &mut Frame, app: &App) {
+fn render_models(frame: &mut Frame, app: &App) {
     let area = centered(frame.area(), 68, 18);
     frame.render_widget(Clear, area);
     let owned = app.owned_tiles();
     let items = if owned.is_empty() {
         vec![ListItem::new(if app.language == Language::ZhCn {
-            "暂无地产"
+            "暂无模型"
         } else {
-            "No assets"
+            "No models"
         })]
     } else {
         owned
             .iter()
             .map(|tile| {
-                let definition = asset(*tile).unwrap();
-                let state = &app.game.as_ref().unwrap().assets[tile];
+                let definition = model(*tile).unwrap();
+                let state = &app.game.as_ref().unwrap().models[tile];
                 ListItem::new(format!(
-                    "#{tile} {} · H{} · {} · ${}",
+                    "#{tile} {} · {} · T{} · {} · ¢{}",
                     definition.name(app.language),
-                    state.houses,
-                    if state.mortgaged {
-                        "MORTGAGED"
-                    } else {
-                        "ACTIVE"
-                    },
-                    definition.price
+                    format_parameters(definition.parameter_count),
+                    state.tensors,
+                    if state.archived { "ARCHIVED" } else { "ACTIVE" },
+                    definition.price()
                 ))
             })
             .collect()
     };
     let mut state = ListState::default().with_selected(
-        (!owned.is_empty()).then_some(app.asset_selection.min(owned.len().saturating_sub(1))),
+        (!owned.is_empty()).then_some(app.model_selection.min(owned.len().saturating_sub(1))),
     );
     let list = List::new(items)
         .block(
             Block::default()
                 .title(format!(
-                    "{} · b build · x sell · g mortgage · u unmortgage · Esc",
-                    text(app.language, "assets")
+                    "{} · +/t tensor · -/x release · a archive · r restore · Esc",
+                    text(app.language, "models")
                 ))
                 .borders(Borders::ALL),
         )
@@ -1017,30 +1032,30 @@ fn render_assets(frame: &mut Frame, app: &App) {
 }
 
 fn render_help(frame: &mut Frame, app: &App) {
-    let area = centered(frame.area(), 74, 20);
+    let area = centered(frame.area(), 88, 22);
     frame.render_widget(Clear, area);
     let help = match app.language {
         Language::ZhCn => {
             "游戏目标：让其他玩家破产，或在回合上限时拥有最高净资产。\n\n\
             r 掷骰 · p 购买 · a 拒购/拍卖 · b 最小加价\n\
-            m 资产管理 · e 结束回合 · s 保存 · l 切换语言\n\
+            m 模型管理 · e 结束回合 · s 保存 · l 切换语言\n\
             : 打开命令面板 · q 安全退出 · Esc 关闭弹窗\n\n\
-            命令：roll, buy, auction, bid <金额>, end, build <格号>,\n\
-            sell <格号>, mortgage <格号>, unmortgage <格号>,\n\
-            payjail, usecard, save [名称], load <id>, status, help, quit\n\n\
-            集齐同色地产后可均匀建房。抵押前必须卖掉该组全部房屋。\n\
+            命令：roll, buy, auction, bid <金额>, end, tensor <格号>,\n\
+            untensor <格号>, archive <格号>, restore <格号>,\n\
+            paycooldown, usebypass, save [名称], load <id>, status, help, quit\n\n\
+            持有同家任意三个模型后可均匀配置 Tensor；归档前必须释放该家族全部 Tensor。\n\
             拒绝购买会触发所有未破产玩家参与的拍卖。"
         }
         Language::En => {
             "Goal: bankrupt every opponent, or have the highest net worth at the round limit.\n\n\
             r roll · p purchase · a decline/auction · b minimum bid\n\
-            m asset manager · e end turn · s save · l language\n\
+            m model manager · e end turn · s save · l language\n\
             : command palette · q safe quit · Esc close overlay\n\n\
-            Commands: roll, buy, auction, bid <amount>, end, build <tile>,\n\
-            sell <tile>, mortgage <tile>, unmortgage <tile>,\n\
-            payjail, usecard, save [name], load <id>, status, help, quit\n\n\
-            Complete a color group to build evenly. Sell every house in the\n\
-            group before mortgaging it. Declining a purchase starts an auction."
+            Commands: roll, buy, auction, bid <amount>, end, tensor <tile>,\n\
+            untensor <tile>, archive <tile>, restore <tile>,\n\
+            paycooldown, usebypass, save [name], load <id>, status, help, quit\n\n\
+            Own any three models in a family to allocate Tensors evenly. Release every\n\
+            Tensor in that family before archiving. Declining a purchase starts an auction."
         }
     };
     frame.render_widget(
@@ -1062,7 +1077,7 @@ mod tests {
 
     #[test]
     fn renders_home_in_both_languages() {
-        let root = std::env::temp_dir().join(format!("monopoly-ui-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tensor-ui-test-{}", std::process::id()));
         let mut app = App::new(SaveStore::at(root));
         for language in [Language::ZhCn, Language::En] {
             app.language = language;
@@ -1102,8 +1117,7 @@ mod tests {
 
     #[test]
     fn new_game_renders_board_and_accepts_command() {
-        let root =
-            std::env::temp_dir().join(format!("monopoly-ui-game-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tensor-ui-game-test-{}", std::process::id()));
         let mut app = App::new(SaveStore::at(root));
         app.start_game();
         app.execute_command("roll");
@@ -1119,6 +1133,18 @@ mod tests {
             .map(|cell| cell.symbol())
             .filter(|symbol| !symbol.trim().is_empty())
             .collect::<String>();
-        assert!(content.contains("晨曦巷"));
+        assert!(content.contains("Qwen3"));
+    }
+
+    #[test]
+    fn board_coordinates_cover_the_perimeter_once() {
+        let coordinates = (0..BOARD.len())
+            .map(|index| board_coordinates(index).unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(coordinates.len(), 24);
+        assert!(coordinates
+            .iter()
+            .all(|(column, row)| *column <= 6 && *row <= 6));
+        assert!(board_coordinates(24).is_none());
     }
 }
