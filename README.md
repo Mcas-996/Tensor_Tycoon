@@ -35,6 +35,15 @@ After installation, start the game with:
 tensor_tycoon
 ```
 
+To view command-line help or the installed version, run:
+
+```console
+tensor_tycoon --help
+tensor_tycoon --version
+```
+
+The short forms `-h` and `-v` are also supported.
+
 ## Updating
 
 Installations created by the shell or PowerShell installer include an updater.
