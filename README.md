@@ -4,7 +4,7 @@
 
 # 🎲 Tensor Tycoon
 
-### Build an AI empire—one roll, model, and Tensor at a time.
+## Build an AI empire—one roll, model, and Tensor at a time
 
 A bilingual terminal strategy game about acquiring AI models, outsmarting bots,
 and becoming the last tycoon standing.
