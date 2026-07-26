@@ -1,5 +1,7 @@
 use crate::ai::drive_bots;
-use crate::game::{model, Action, Game, GameConfig, Language, Phase, Space, BOARD, MODELS};
+use crate::game::{
+    model, Action, Difficulty, Game, GameConfig, Language, Phase, Space, BOARD, MODELS,
+};
 use crate::i18n::{log_line, text};
 use crate::persistence::{Preferences, SaveStore, SaveSummary};
 use crossterm::{
@@ -39,6 +41,7 @@ enum Overlay {
 
 struct NewGameForm {
     name: String,
+    difficulty: Difficulty,
     bots: u8,
     rounds: u16,
     focus: usize,
@@ -48,6 +51,7 @@ impl Default for NewGameForm {
     fn default() -> Self {
         Self {
             name: "Player".into(),
+            difficulty: Difficulty::Easy,
             bots: 1,
             rounds: 100,
             focus: 0,
@@ -125,6 +129,7 @@ impl App {
             bot_count: self.form.bots,
             round_limit: self.form.rounds,
             seed,
+            difficulty: self.form.difficulty,
         };
         match Game::new(config) {
             Ok(game) => {
@@ -278,22 +283,24 @@ impl App {
     fn handle_new_game_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.screen = Screen::Home,
-            KeyCode::Tab | KeyCode::Down => self.form.focus = (self.form.focus + 1) % 3,
-            KeyCode::BackTab | KeyCode::Up => self.form.focus = (self.form.focus + 2) % 3,
+            KeyCode::Tab | KeyCode::Down => self.form.focus = (self.form.focus + 1) % 4,
+            KeyCode::BackTab | KeyCode::Up => self.form.focus = (self.form.focus + 3) % 4,
             KeyCode::Left => match self.form.focus {
-                1 => self.form.bots = self.form.bots.saturating_sub(1).max(1),
-                2 => self.form.rounds = self.form.rounds.saturating_sub(20).max(20),
+                1 => self.form.difficulty = Difficulty::Easy,
+                2 => self.form.bots = self.form.bots.saturating_sub(1).max(1),
+                3 => self.form.rounds = self.form.rounds.saturating_sub(20).max(20),
                 _ => {}
             },
             KeyCode::Right => match self.form.focus {
-                1 => self.form.bots = (self.form.bots + 1).min(3),
-                2 => self.form.rounds = (self.form.rounds + 20).min(500),
+                1 => self.form.difficulty = Difficulty::Standard,
+                2 => self.form.bots = (self.form.bots + 1).min(3),
+                3 => self.form.rounds = (self.form.rounds + 20).min(500),
                 _ => {}
             },
-            KeyCode::Char('-') if self.form.focus == 2 => {
+            KeyCode::Char('-') if self.form.focus == 3 => {
                 self.form.rounds = self.form.rounds.saturating_sub(1).max(20);
             }
-            KeyCode::Char('+') | KeyCode::Char('=') if self.form.focus == 2 => {
+            KeyCode::Char('+') | KeyCode::Char('=') if self.form.focus == 3 => {
                 self.form.rounds = (self.form.rounds + 1).min(500);
             }
             KeyCode::Backspace if self.form.focus == 0 => {
@@ -672,9 +679,14 @@ fn render_home(frame: &mut Frame, app: &App) {
 }
 
 fn render_new_game(frame: &mut Frame, app: &App) {
-    let area = centered(frame.area(), 58, 15);
+    let area = centered(frame.area(), 58, 16);
+    let difficulty = match app.form.difficulty {
+        Difficulty::Easy => text(app.language, "easy"),
+        Difficulty::Standard => text(app.language, "standard"),
+    };
     let rows = [
         format!("{}: {}", text(app.language, "player_name"), app.form.name),
+        format!("{}: {}  ← →", text(app.language, "difficulty"), difficulty),
         format!("{}: {}  ← →", text(app.language, "bots"), app.form.bots),
         format!(
             "{}: {}  ← → ±20, +/- ±1",
@@ -818,10 +830,14 @@ fn render_game(frame: &mut Frame, app: &App) {
         })
         .collect::<Vec<Line>>();
     let title = format!(
-        "{} {}/{} · {:?}",
+        "{} {}/{} · {} · {:?}",
         text(app.language, "round"),
         game.round,
         game.config.round_limit,
+        match game.config.difficulty {
+            Difficulty::Easy => text(app.language, "easy"),
+            Difficulty::Standard => text(app.language, "standard"),
+        },
         game.phase
     );
     frame.render_widget(
@@ -1088,6 +1104,7 @@ fn render_help(frame: &mut Frame, app: &App) {
             命令：roll, buy, auction, bid <金额>, end, tensor <格号>,\n\
             untensor <格号>, archive <格号>, restore <格号>,\n\
             paycooldown, usebypass, save [名称], load <id>, status, help, quit\n\n\
+            简单模式为人类提供 2000 初始点数、三选一骰子与事件牌，并让电脑更保守。\n\
             冷却区会优先自动使用绕过令牌；没有令牌时，双数免费离开，否则自动支付 50 点。\n\
             持有同家任意三个模型后可均匀配置 Tensor；归档前必须释放该家族全部 Tensor。\n\
             拒绝购买会触发所有未破产玩家参与的拍卖。"
@@ -1100,6 +1117,8 @@ fn render_help(frame: &mut Frame, app: &App) {
             Commands: roll, buy, auction, bid <amount>, end, tensor <tile>,\n\
             untensor <tile>, archive <tile>, restore <tile>,\n\
             paycooldown, usebypass, save [name], load <id>, status, help, quit\n\n\
+            Easy mode gives the human 2000 starting credits, best-of-three rolls and cards,\n\
+            and more conservative bots.\n\
             Cooldown automatically uses a bypass token first. Without one, doubles leave free;\n\
             otherwise 50 credits are paid automatically.\n\
             Own any three models in a family to allocate Tensors evenly. Release every\n\
@@ -1183,6 +1202,25 @@ mod tests {
             .filter(|symbol| !symbol.trim().is_empty())
             .collect::<String>();
         assert!(content.contains("Qwen3"));
+    }
+
+    #[test]
+    fn new_game_defaults_to_easy_and_allows_difficulty_selection() {
+        let mut app = App::new(SaveStore::at(std::env::temp_dir()));
+        assert_eq!(app.form.difficulty, Difficulty::Easy);
+        app.form.focus = 1;
+        app.handle_new_game_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.form.difficulty, Difficulty::Standard);
+        app.handle_new_game_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.form.difficulty, Difficulty::Easy);
+
+        app.start_game();
+        let game = app.game.as_ref().unwrap();
+        assert_eq!(game.config.difficulty, Difficulty::Easy);
+        assert_eq!(
+            game.players[0].credits,
+            crate::game::EASY_HUMAN_START_CREDITS
+        );
     }
 
     fn auction_app() -> App {

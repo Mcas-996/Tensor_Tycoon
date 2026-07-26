@@ -5,9 +5,6 @@ A bilingual terminal strategy game built with Rust and
 deterministic bots to deploy AI models, collect usage credits, and allocate
 Tensor capacity on a compact 24-tile board.
 
-这是一款使用 Rust 和 `ratatui` 开发的双语终端策略游戏。玩家可在 24 格棋盘上
-部署 AI 模型、收取使用点数、配置 Tensor，并与 1–3 名固定策略电脑玩家对战。
-
 ## Features
 
 - 16 text-generation models from the Qwen, Llama, DeepSeek, and Kimi families
@@ -15,6 +12,7 @@ Tensor capacity on a compact 24-tile board.
 - Family bonuses after deploying any three models from the same family
 - Even Tensor allocation, release, archiving, restoration, and auctions
 - Random Seed events, compute bills, cooldowns, cache hits, and context overflows
+- Selectable Easy mode with stronger human luck and more conservative bots
 - Chinese and English UI, deterministic saves, and a versioned multi-save manager
 
 ## Quick Start

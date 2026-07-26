@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const START_CREDITS: i32 = 1_500;
+pub const EASY_HUMAN_START_CREDITS: i32 = 2_000;
 pub const PASS_START_BONUS: i32 = 200;
 pub const COOLDOWN_FEE: i32 = 50;
 pub const MAX_TENSORS: u8 = 4;
@@ -12,12 +13,21 @@ pub enum Language {
     En,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Difficulty {
+    Easy,
+    #[default]
+    Standard,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GameConfig {
     pub human_name: String,
     pub bot_count: u8,
     pub round_limit: u16,
     pub seed: u64,
+    #[serde(default)]
+    pub difficulty: Difficulty,
 }
 
 impl Default for GameConfig {
@@ -27,6 +37,7 @@ impl Default for GameConfig {
             bot_count: 1,
             round_limit: 100,
             seed: 0x4d4f_4e4f_504f_4c59,
+            difficulty: Difficulty::Standard,
         }
     }
 }
@@ -505,7 +516,11 @@ impl Game {
             id: 0,
             name: config.human_name.clone(),
             is_human: true,
-            credits: START_CREDITS,
+            credits: if config.difficulty == Difficulty::Easy {
+                EASY_HUMAN_START_CREDITS
+            } else {
+                START_CREDITS
+            },
             position: 0,
             cooldown_turns: 0,
             bypass_tokens: 0,
@@ -599,8 +614,18 @@ impl Game {
             return Err(GameError::InvalidPhase);
         }
         let player = self.current_player;
-        let first = self.rng.die();
-        let second = self.rng.die();
+        let candidate_count = if self.easy_human_assist(player) { 3 } else { 1 };
+        let mut selected = (0, 0);
+        let mut selected_score = i32::MIN;
+        for _ in 0..candidate_count {
+            let candidate = (self.rng.die(), self.rng.die());
+            let score = self.roll_score(player, candidate.0, candidate.1);
+            if score > selected_score {
+                selected = candidate;
+                selected_score = score;
+            }
+        }
+        let (first, second) = selected;
         self.last_roll = Some((first, second));
         self.logs.push(GameLog::Rolled {
             player,
@@ -648,6 +673,64 @@ impl Game {
         }
         self.move_by(first + second);
         Ok(())
+    }
+
+    fn easy_human_assist(&self, player: usize) -> bool {
+        self.config.difficulty == Difficulty::Easy && self.players[player].is_human
+    }
+
+    fn roll_score(&self, player: usize, first: u8, second: u8) -> i32 {
+        let doubles = first == second;
+        if self.players[player].cooldown_turns > 0 {
+            let fee = if self.players[player].bypass_tokens == 0 && !doubles {
+                -COOLDOWN_FEE
+            } else {
+                0
+            };
+            return fee
+                + self.landing_score(
+                    player,
+                    self.players[player].position,
+                    (self.players[player].position + (first + second) as usize) % BOARD.len(),
+                    true,
+                );
+        }
+        if doubles && self.doubles_streak >= 2 {
+            return -250;
+        }
+        let target = (self.players[player].position + (first + second) as usize) % BOARD.len();
+        self.landing_score(player, self.players[player].position, target, true)
+            + if doubles { 100 } else { 0 }
+    }
+
+    fn landing_score(
+        &self,
+        player: usize,
+        origin: usize,
+        target: usize,
+        awards_pass_bonus: bool,
+    ) -> i32 {
+        let pass_bonus = if awards_pass_bonus && target < origin {
+            PASS_START_BONUS
+        } else {
+            0
+        };
+        pass_bonus
+            + match BOARD[target] {
+                Space::Hub | Space::Cooldown | Space::CacheHit => 0,
+                Space::RandomSeed => 100,
+                Space::ComputeBill(amount) => -amount,
+                Space::ContextOverflow => -250,
+                Space::Model(tile) => {
+                    let state = &self.models[&tile];
+                    match state.owner {
+                        None if self.players[player].credits >= model(tile).unwrap().price() => 200,
+                        None => 0,
+                        Some(owner) if owner == player || state.archived => 0,
+                        Some(_) => -self.usage_fee_for(tile),
+                    }
+                }
+            }
     }
 
     fn pay_cooldown(&mut self) -> Result<(), GameError> {
@@ -1069,6 +1152,19 @@ impl Game {
 
     fn draw_card(&mut self) {
         let player = self.current_player;
+        if self.easy_human_assist(player) {
+            let mut best_index = self.deck_index;
+            let mut best_score = i32::MIN;
+            for offset in 0..3.min(self.deck.len()) {
+                let index = (self.deck_index + offset) % self.deck.len();
+                let score = self.card_score(player, self.deck[index]);
+                if score > best_score {
+                    best_index = index;
+                    best_score = score;
+                }
+            }
+            self.deck.swap(self.deck_index, best_index);
+        }
         let card = self.deck[self.deck_index];
         self.deck_index = (self.deck_index + 1) % self.deck.len();
         self.logs.push(GameLog::Drew { player, card });
@@ -1126,6 +1222,39 @@ impl Game {
             }
             Card::EnterCooldown => self.send_to_cooldown(player),
             Card::BypassToken => self.players[player].bypass_tokens += 1,
+        }
+    }
+
+    fn card_score(&self, player: usize, card: Card) -> i32 {
+        let active_opponents = self
+            .players
+            .iter()
+            .filter(|other| other.id != player && !other.bankrupt)
+            .count() as i32;
+        match card {
+            Card::Gain50 => 50,
+            Card::Gain100 => 100,
+            Card::Gain150 => 150,
+            Card::Pay50 => -50,
+            Card::Pay100 => -100,
+            Card::Collect25Each => 25 * active_opponents,
+            Card::Pay25Each => -25 * active_opponents,
+            Card::AdvanceHub => PASS_START_BONUS,
+            Card::AdvanceFlagship => {
+                let origin = self.players[player].position;
+                let target = [5, 11, 17, 23]
+                    .into_iter()
+                    .find(|position| *position > origin)
+                    .unwrap_or(5);
+                self.landing_score(player, origin, target, true)
+            }
+            Card::BackThree => {
+                let origin = self.players[player].position;
+                let target = (origin + BOARD.len() - 3) % BOARD.len();
+                self.landing_score(player, origin, target, false)
+            }
+            Card::EnterCooldown => -250,
+            Card::BypassToken => 100,
         }
     }
 
@@ -1282,6 +1411,113 @@ mod tests {
             ..GameConfig::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn easy_mode_only_boosts_human_starting_credits() {
+        let game = Game::new(GameConfig {
+            difficulty: Difficulty::Easy,
+            bot_count: 3,
+            ..GameConfig::default()
+        })
+        .unwrap();
+        assert_eq!(game.players[0].credits, EASY_HUMAN_START_CREDITS);
+        assert!(game.players[1..]
+            .iter()
+            .all(|player| player.credits == START_CREDITS));
+    }
+
+    #[test]
+    fn missing_difficulty_deserializes_as_standard() {
+        let config: GameConfig = serde_json::from_value(serde_json::json!({
+            "human_name": "Legacy",
+            "bot_count": 1,
+            "round_limit": 100,
+            "seed": 42
+        }))
+        .unwrap();
+        assert_eq!(config.difficulty, Difficulty::Standard);
+    }
+
+    #[test]
+    fn easy_human_roll_chooses_best_of_three_and_consumes_all_candidates() {
+        let mut game = Game::new(GameConfig {
+            difficulty: Difficulty::Easy,
+            seed: 7,
+            ..GameConfig::default()
+        })
+        .unwrap();
+        game.players[0].position = 17;
+
+        let mut expected_rng = game.rng;
+        let candidates = [
+            (expected_rng.die(), expected_rng.die()),
+            (expected_rng.die(), expected_rng.die()),
+            (expected_rng.die(), expected_rng.die()),
+        ];
+        let mut expected = candidates[0];
+        for candidate in &candidates[1..] {
+            if game.roll_score(0, candidate.0, candidate.1)
+                > game.roll_score(0, expected.0, expected.1)
+            {
+                expected = *candidate;
+            }
+        }
+
+        game.apply(Action::Roll).unwrap();
+
+        assert_eq!(game.last_roll, Some(expected));
+        assert_eq!(game.rng, expected_rng);
+    }
+
+    #[test]
+    fn standard_roll_consumes_one_dice_pair() {
+        let mut game = game();
+        let mut expected_rng = game.rng;
+        let expected = (expected_rng.die(), expected_rng.die());
+
+        game.apply(Action::Roll).unwrap();
+
+        assert_eq!(game.last_roll, Some(expected));
+        assert_eq!(game.rng, expected_rng);
+    }
+
+    #[test]
+    fn easy_human_draws_best_of_three_without_discarding_cards() {
+        let mut game = Game::new(GameConfig {
+            difficulty: Difficulty::Easy,
+            ..GameConfig::default()
+        })
+        .unwrap();
+        game.deck = vec![
+            Card::Pay100,
+            Card::Gain150,
+            Card::Pay50,
+            Card::EnterCooldown,
+        ];
+        game.deck_index = 0;
+        let before = game.players[0].credits;
+
+        game.draw_card();
+
+        assert_eq!(game.players[0].credits, before + 150);
+        assert_eq!(game.deck_index, 1);
+        assert_eq!(
+            game.deck,
+            vec![
+                Card::Gain150,
+                Card::Pay100,
+                Card::Pay50,
+                Card::EnterCooldown
+            ]
+        );
+        assert!(matches!(
+            game.logs.first(),
+            Some(GameLog::Drew {
+                player: 0,
+                card: Card::Gain150
+            })
+        ));
     }
 
     #[test]

@@ -382,7 +382,7 @@ fn validate_id(id: &str) -> Result<(), SaveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::{Action, GameConfig};
+    use crate::game::{Action, Difficulty, GameConfig};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_ID: AtomicU64 = AtomicU64::new(0);
@@ -406,6 +406,30 @@ mod tests {
         let loaded = store.load(&id).unwrap();
         assert_eq!(loaded.game, game);
         store.delete(&id).unwrap();
+    }
+
+    #[test]
+    fn version_two_save_without_difficulty_loads_as_standard() {
+        let store = temp_store();
+        fs::create_dir_all(store.saves_dir()).unwrap();
+        let mut game = serde_json::to_value(Game::new(GameConfig::default()).unwrap()).unwrap();
+        game["config"].as_object_mut().unwrap().remove("difficulty");
+        let envelope = serde_json::json!({
+            "schema_version": SAVE_VERSION,
+            "id": "abc",
+            "name": "Legacy v2",
+            "updated_at_ms": 1,
+            "game": game
+        });
+        fs::write(
+            store.path_for("abc"),
+            serde_json::to_vec_pretty(&envelope).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = store.load("abc").unwrap();
+
+        assert_eq!(loaded.game.config.difficulty, Difficulty::Standard);
     }
 
     #[test]
