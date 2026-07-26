@@ -40,6 +40,7 @@ https://github.com/user-attachments/assets/08a70016-71b2-44c7-bf66-b4c172fbe80d
 | 🤖 | **AI opponents** | Face configurable bots with difficulty-aware strategies. |
 | 🧠 | **AI model market** | Acquire models, complete families, allocate Tensors, and archive assets. |
 | 🔨 | **Live auctions** | Declined models go to an interactive auction for every solvent player. |
+| 💳 | **Credit loans** | Borrow 5,000 credits per loan, repay after ten rounds, and liquidate or auction assets if needed. |
 | 🎴 | **Tactical events** | Navigate event cards, cooldowns, bypass tokens, and bankruptcy decisions. |
 | 💾 | **Persistent games** | Create, load, overwrite, and migrate versioned local saves. |
 | 🖥️ | **Cross-platform TUI** | Play from a polished terminal interface on macOS, Linux, or Windows. |
@@ -104,6 +105,7 @@ It checks GitHub Releases and installs a newer version when one is available.
 | `b` | Your auction turn | Place the minimum valid bid |
 | `a` | Your auction turn | Pass |
 | `m` | Management phase | Open the model manager |
+| `n` | Active turn | Take a 5,000-credit loan |
 | `e` | Management phase | End the turn |
 | `s` | In game | Save, or open the save command |
 | `l` | Anywhere in the game | Switch Chinese / English |
@@ -117,6 +119,7 @@ It checks GitHub Releases and installs a newer version when one is available.
 roll                  buy                   auction
 bid <amount>          end                   tensor <tile>
 untensor <tile>       archive <tile>        restore <tile>
+loan                  sell <tile>           bankrupt
 paycooldown           usebypass             save [name]
 load <id>             status                help
 quit
@@ -132,6 +135,10 @@ quit
   doubles leave for free and a non-double roll costs 50 credits before movement.
 - **Auctions** begin when a purchase is declined and include every player who
   has not gone bankrupt.
+- **Loans** grant 5,000 credits each and are due after ten rounds. Loans due
+  together are repaid as one amount, and outstanding principal reduces net worth.
+- **Loan settlement** allows releasing Tensors, archiving models, or auctioning
+  active models with their Tensors. The player may also declare bankruptcy.
 - **Saves** use a versioned format; legacy application data and version 1 saves
   are copied and migrated automatically while the originals remain as backups.
 

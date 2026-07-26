@@ -249,5 +249,62 @@ pub fn log_line(game: &Game, language: Language, log: &GameLog) -> String {
             player(*id),
             model(*tile).map(|a| a.name(language)).unwrap_or("?")
         ),
+        (
+            Language::ZhCn,
+            GameLog::LoanTaken {
+                player: id,
+                amount,
+                due_round,
+            },
+        ) => format!("{} 贷款 {}，第 {} 轮到期", player(*id), amount, due_round),
+        (
+            Language::En,
+            GameLog::LoanTaken {
+                player: id,
+                amount,
+                due_round,
+            },
+        ) => format!(
+            "{} borrowed {}; due round {}",
+            player(*id),
+            amount,
+            due_round
+        ),
+        (Language::ZhCn, GameLog::LoanRepaid { player: id, amount }) => {
+            format!("{} 偿还贷款 {}", player(*id), amount)
+        }
+        (Language::En, GameLog::LoanRepaid { player: id, amount }) => {
+            format!("{} repaid loan {}", player(*id), amount)
+        }
+        (
+            Language::ZhCn,
+            GameLog::ModelSold {
+                seller,
+                buyer,
+                tile,
+                price,
+            },
+        ) => format!(
+            "{} 以 {} 将 {} 拍卖给 {}",
+            player(*seller),
+            price,
+            model(*tile).map(|a| a.name(language)).unwrap_or("?"),
+            player(*buyer)
+        ),
+        (
+            Language::En,
+            GameLog::ModelSold {
+                seller,
+                buyer,
+                tile,
+                price,
+            },
+        ) => format!(
+            "{} sold {} to {} for {}",
+            player(*seller),
+            model(*tile).map(|a| a.name(language)).unwrap_or("?"),
+            player(*buyer),
+            price
+        ),
     }
 }

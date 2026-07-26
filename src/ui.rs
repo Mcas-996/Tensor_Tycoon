@@ -1,6 +1,6 @@
 use crate::ai::drive_bots;
 use crate::game::{
-    model, Action, Difficulty, Game, GameConfig, Language, Phase, Space, BOARD, MODELS,
+    model, Action, Difficulty, Game, GameConfig, Language, Phase, Space, BOARD, LOAN_AMOUNT, MODELS,
 };
 use crate::i18n::{log_line, text};
 use crate::persistence::{Preferences, SaveStore, SaveSummary};
@@ -147,10 +147,48 @@ impl App {
         let Some(game) = self.game.as_mut() else {
             return;
         };
+        let was_settlement = matches!(game.phase, Phase::LoanSettlement { .. });
         match game.apply(action).and_then(|_| drive_bots(game)) {
-            Ok(()) => self.message.clear(),
+            Ok(()) => {
+                self.message.clear();
+                if was_settlement
+                    && !matches!(
+                        self.game.as_ref().map(|game| game.phase),
+                        Some(Phase::LoanSettlement { .. })
+                    )
+                    && self.overlay == Overlay::Models
+                {
+                    self.overlay = Overlay::None;
+                }
+                self.sync_loan_settlement();
+            }
             Err(error) => self.message = error.to_string(),
         }
+    }
+
+    fn sync_loan_settlement(&mut self) {
+        let Some(game) = self.game.as_ref() else {
+            return;
+        };
+        let Phase::LoanSettlement { amount } = game.phase else {
+            return;
+        };
+        if !game.current().is_human {
+            return;
+        }
+        self.overlay = Overlay::Models;
+        self.model_selection = self
+            .model_selection
+            .min(self.owned_tiles().len().saturating_sub(1));
+        let shortfall = (amount - game.current().credits).max(0);
+        self.message = match self.language {
+            Language::ZhCn => format!(
+                "贷款到期：需偿还 {amount}，缺口 {shortfall}；请释放 Tensor、抵押/拍卖模型，或按 b 破产"
+            ),
+            Language::En => format!(
+                "Loan due: {amount}; shortfall {shortfall}. Release Tensors, archive/sell models, or press b to bankrupt"
+            ),
+        };
     }
 
     fn save_game(&mut self, name: Option<&str>) {
@@ -204,6 +242,7 @@ impl App {
                         self.message = error.to_string();
                     }
                 }
+                self.sync_loan_settlement();
             }
             Err(error) => self.message = error.to_string(),
         }
@@ -355,6 +394,14 @@ impl App {
                 self.overlay = Overlay::Models;
                 self.model_selection = 0;
             }
+            KeyCode::Char('n')
+                if matches!(
+                    phase,
+                    Some(Phase::AwaitRoll | Phase::OfferPurchase { .. } | Phase::Manage)
+                ) =>
+            {
+                self.apply_action(Action::TakeLoan)
+            }
             KeyCode::Char('s') => {
                 if self.current_save.is_some() {
                     self.save_game(None);
@@ -423,6 +470,13 @@ impl App {
                     self.apply_action(Action::Restore(*tile));
                 }
             }
+            KeyCode::Char('s') => {
+                if let Some(tile) = owned.get(self.model_selection) {
+                    self.apply_action(Action::SellModel(*tile));
+                }
+            }
+            KeyCode::Char('n') => self.apply_action(Action::TakeLoan),
+            KeyCode::Char('b') => self.apply_action(Action::DeclareBankruptcy),
             _ => {}
         }
     }
@@ -511,6 +565,15 @@ impl App {
                     self.message = "restore <tile>".into();
                 }
             }
+            "loan" => self.apply_action(Action::TakeLoan),
+            "sell" => {
+                if let Some(tile) = tile() {
+                    self.apply_action(Action::SellModel(tile));
+                } else {
+                    self.message = "sell <tile>".into();
+                }
+            }
+            "bankrupt" => self.apply_action(Action::DeclareBankruptcy),
             "save" => {
                 let name = parts.collect::<Vec<_>>().join(" ");
                 self.save_game((!name.is_empty()).then_some(name.as_str()));
@@ -524,6 +587,7 @@ impl App {
                             if let Some(game) = self.game.as_mut() {
                                 let _ = drive_bots(game);
                             }
+                            self.sync_loan_settlement();
                         }
                         Err(error) => self.message = error.to_string(),
                     }
@@ -533,9 +597,18 @@ impl App {
             }
             "status" => {
                 if let Some(game) = self.game.as_ref() {
+                    let debt = game.current().loans.len() as i32 * LOAN_AMOUNT;
+                    let next_due = game
+                        .current()
+                        .loans
+                        .iter()
+                        .map(|loan| loan.due_round)
+                        .min()
+                        .map(|round| round.to_string())
+                        .unwrap_or_else(|| "-".into());
                     self.message = format!(
-                        "round {}/{} · phase {:?}",
-                        game.round, game.config.round_limit, game.phase
+                        "round {}/{} · phase {:?} · debt {} · next due {}",
+                        game.round, game.config.round_limit, game.phase, debt, next_due
                     );
                 }
             }
@@ -804,13 +877,26 @@ fn render_game(frame: &mut Frame, app: &App) {
             } else {
                 ""
             };
+            let debt = player.loans.len() as i32 * LOAN_AMOUNT;
+            let loan = if debt > 0 {
+                let next_due = player
+                    .loans
+                    .iter()
+                    .map(|loan| loan.due_round)
+                    .min()
+                    .unwrap_or(game.round);
+                format!("  L:{debt}@{next_due}")
+            } else {
+                String::new()
+            };
             Line::from(format!(
-                "{marker}{} {}  ¢{}  {}:{}",
+                "{marker}{} {}  ¢{}  {}:{}{}",
                 player.id + 1,
                 player.name,
                 player.credits,
                 text(app.language, "worth"),
-                game.net_worth(player.id)
+                game.net_worth(player.id),
+                loan
             ))
             .style(if player.is_human {
                 Style::default().fg(Color::Cyan)
@@ -936,10 +1022,11 @@ fn render_board(frame: &mut Frame, app: &App, game: &Game, area: Rect) {
     }
     let center = Rect::new(area.x + cell_w, area.y + cell_h, cell_w * 5, cell_h * 5);
     let controls = match game.phase {
-        Phase::AwaitRoll => "r roll · : command · s save · m models",
-        Phase::OfferPurchase { .. } => "p buy · a auction · : command",
+        Phase::AwaitRoll => "r roll · n loan · : command · s save · m models",
+        Phase::OfferPurchase { .. } => "p buy · a auction · n loan · : command",
         Phase::Auction => "b bid +10 · a pass · : bid <amount>",
-        Phase::Manage => "m models · e end turn · s save",
+        Phase::Manage => "m models · n loan · e end turn · s save",
+        Phase::LoanSettlement { .. } => "m settlement · b bankrupt · : command",
         Phase::GameOver => "q quit · : save <name>",
     };
     let auction = if game.phase == Phase::Auction {
@@ -1082,8 +1169,18 @@ fn render_models(frame: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .title(format!(
-                    "{} · +/t tensor · -/x release · a archive · r restore · Esc",
-                    text(app.language, "models")
+                    "{}{} · +/t tensor · -/x release · a archive · s sell · n loan · b bankrupt · r restore · Esc",
+                    text(app.language, "models"),
+                    app.game
+                        .as_ref()
+                        .and_then(|game| match game.phase {
+                            Phase::LoanSettlement { amount } => Some(format!(
+                                " · due {amount}/cash {}",
+                                game.current().credits
+                            )),
+                            _ => None,
+                        })
+                        .unwrap_or_default()
                 ))
                 .borders(Borders::ALL),
         )
@@ -1099,30 +1196,31 @@ fn render_help(frame: &mut Frame, app: &App) {
         Language::ZhCn => {
             "游戏目标：让其他玩家破产，或在回合上限时拥有最高净资产。\n\n\
             r 掷骰 · p 购买 · a 拒购/拍卖 · b 最小加价\n\
-            m 模型管理 · e 结束回合 · s 保存 · l 切换语言\n\
+            m 模型管理 · n 贷款 · e 结束回合 · s 保存 · l 切换语言\n\
             : 打开命令面板 · q 安全退出 · Esc 关闭弹窗\n\n\
             命令：roll, buy, auction, bid <金额>, end, tensor <格号>,\n\
-            untensor <格号>, archive <格号>, restore <格号>,\n\
+            untensor <格号>, archive <格号>, restore <格号>, loan, sell <格号>, bankrupt,\n\
             paycooldown, usebypass, save [名称], load <id>, status, help, quit\n\n\
             简单模式为人类提供 2000 初始点数、三选一骰子与事件牌，并让电脑更保守。\n\
             冷却区会优先自动使用绕过令牌；没有令牌时，双数免费离开，否则自动支付 50 点。\n\
             持有同家任意三个模型后可均匀配置 Tensor；归档前必须释放该家族全部 Tensor。\n\
-            拒绝购买会触发所有未破产玩家参与的拍卖。"
+            每笔贷款获得 5000 点并在十轮后偿还；自有未归档模型可连同 Tensor 一起拍卖。"
         }
         Language::En => {
             "Goal: bankrupt every opponent, or have the highest net worth at the round limit.\n\n\
             r roll · p purchase · a decline/auction · b minimum bid\n\
-            m model manager · e end turn · s save · l language\n\
+            m model manager · n loan · e end turn · s save · l language\n\
             : command palette · q safe quit · Esc close overlay\n\n\
             Commands: roll, buy, auction, bid <amount>, end, tensor <tile>,\n\
-            untensor <tile>, archive <tile>, restore <tile>,\n\
+            untensor <tile>, archive <tile>, restore <tile>, loan, sell <tile>, bankrupt,\n\
             paycooldown, usebypass, save [name], load <id>, status, help, quit\n\n\
             Easy mode gives the human 2000 starting credits, best-of-three rolls and cards,\n\
             and more conservative bots.\n\
             Cooldown automatically uses a bypass token first. Without one, doubles leave free;\n\
             otherwise 50 credits are paid automatically.\n\
             Own any three models in a family to allocate Tensors evenly. Release every\n\
-            Tensor in that family before archiving. Declining a purchase starts an auction."
+            Tensor in that family before archiving. Each loan grants 5000 and is due in ten rounds;\n\
+            active owned models can be auctioned with their Tensors."
         }
     };
     frame.render_widget(
@@ -1221,6 +1319,34 @@ mod tests {
             game.players[0].credits,
             crate::game::EASY_HUMAN_START_CREDITS
         );
+    }
+
+    #[test]
+    fn loan_shortcut_adds_a_fixed_loan() {
+        let mut app = App::new(SaveStore::at(std::env::temp_dir()));
+        app.start_game();
+        let before = app.game.as_ref().unwrap().players[0].credits;
+
+        app.handle_key(press('n'));
+
+        let game = app.game.as_ref().unwrap();
+        assert_eq!(game.players[0].credits, before + LOAN_AMOUNT);
+        assert_eq!(game.players[0].loans.len(), 1);
+        assert_eq!(game.players[0].loans[0].due_round, 11);
+    }
+
+    #[test]
+    fn human_loan_settlement_opens_model_manager() {
+        let mut app = App::new(SaveStore::at(std::env::temp_dir()));
+        app.start_game();
+        app.game.as_mut().unwrap().phase = Phase::LoanSettlement {
+            amount: LOAN_AMOUNT,
+        };
+
+        app.sync_loan_settlement();
+
+        assert_eq!(app.overlay, Overlay::Models);
+        assert!(app.message.contains("5000"));
     }
 
     fn auction_app() -> App {

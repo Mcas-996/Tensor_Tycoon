@@ -6,7 +6,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const SAVE_VERSION: u32 = 2;
+pub const SAVE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveEnvelope {
@@ -157,13 +157,13 @@ impl SaveStore {
             return Err(SaveError::NotFound);
         }
         let mut envelope: SaveEnvelope = serde_json::from_slice(&fs::read(path)?)?;
-        if !matches!(envelope.schema_version, 1 | SAVE_VERSION) {
+        if !matches!(envelope.schema_version, 1 | 2 | SAVE_VERSION) {
             return Err(SaveError::UnsupportedVersion(envelope.schema_version));
         }
         if envelope.schema_version == 1 {
             migrate_v1_game(&mut envelope.game);
-            envelope.schema_version = SAVE_VERSION;
         }
+        envelope.schema_version = SAVE_VERSION;
         Ok(envelope)
     }
 
@@ -189,7 +189,7 @@ impl SaveStore {
                     name: envelope.name,
                     updated_at_ms: envelope.updated_at_ms,
                     round: envelope.game.round,
-                    error: (!matches!(envelope.schema_version, 1 | SAVE_VERSION))
+                    error: (!matches!(envelope.schema_version, 1 | 2 | SAVE_VERSION))
                         .then(|| format!("version {}", envelope.schema_version)),
                 }),
                 Err(error) => saves.push(SaveSummary {
@@ -414,8 +414,11 @@ mod tests {
         fs::create_dir_all(store.saves_dir()).unwrap();
         let mut game = serde_json::to_value(Game::new(GameConfig::default()).unwrap()).unwrap();
         game["config"].as_object_mut().unwrap().remove("difficulty");
+        for player in game["players"].as_array_mut().unwrap() {
+            player.as_object_mut().unwrap().remove("loans");
+        }
         let envelope = serde_json::json!({
-            "schema_version": SAVE_VERSION,
+            "schema_version": 2,
             "id": "abc",
             "name": "Legacy v2",
             "updated_at_ms": 1,
@@ -430,6 +433,12 @@ mod tests {
         let loaded = store.load("abc").unwrap();
 
         assert_eq!(loaded.game.config.difficulty, Difficulty::Standard);
+        assert!(loaded
+            .game
+            .players
+            .iter()
+            .all(|player| player.loans.is_empty()));
+        assert_eq!(loaded.schema_version, SAVE_VERSION);
     }
 
     #[test]

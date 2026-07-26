@@ -54,14 +54,28 @@ pub fn drive_bots(game: &mut Game) -> Result<(), GameError> {
                 if game.players[player].credits - price >= purchase_reserve(game) {
                     game.apply(Action::Buy)?;
                 } else {
-                    game.apply(Action::Decline)?;
+                    game.apply(Action::TakeLoan)?;
                 }
             }
             Phase::Manage => {
                 if let Some(action) = management_action(game, player) {
                     game.apply(action)?;
+                } else if needs_management_loan(game, player) {
+                    game.apply(Action::TakeLoan)?;
                 } else {
                     game.apply(Action::EndTurn)?;
+                }
+            }
+            Phase::LoanSettlement { amount } => {
+                if game.players[player].credits >= amount {
+                    return Err(GameError::InvalidAction(
+                        "funded loan settlement did not resolve".into(),
+                    ));
+                }
+                if let Some(action) = liquidation_action(game, player) {
+                    game.apply(action)?;
+                } else {
+                    game.apply(Action::DeclareBankruptcy)?;
                 }
             }
             Phase::Auction | Phase::GameOver => {}
@@ -105,6 +119,77 @@ fn management_action(game: &Game, player: usize) -> Option<Action> {
     None
 }
 
+fn needs_management_loan(game: &Game, player: usize) -> bool {
+    let reserve = improvement_reserve(game);
+    for definition in &MODELS {
+        let state = &game.models[&definition.tile];
+        if state.owner == Some(player) && state.archived {
+            let cost = (definition.archive_value() * 110 + 99) / 100;
+            if game.players[player].credits - cost < reserve {
+                return true;
+            }
+        }
+    }
+    for definition in &MODELS {
+        let state = &game.models[&definition.tile];
+        if state.owner == Some(player)
+            && game.has_tensor_access(player, definition.family)
+            && state.tensors < 4
+        {
+            let min = MODELS
+                .iter()
+                .filter(|candidate| candidate.family == definition.family)
+                .filter(|candidate| game.models[&candidate.tile].owner == Some(player))
+                .map(|candidate| game.models[&candidate.tile].tensors)
+                .min()
+                .unwrap_or(0);
+            if state.tensors == min
+                && game.players[player].credits - definition.tensor_cost < reserve
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn liquidation_action(game: &Game, player: usize) -> Option<Action> {
+    for definition in &MODELS {
+        let state = &game.models[&definition.tile];
+        if state.owner != Some(player) || state.tensors == 0 {
+            continue;
+        }
+        let max = MODELS
+            .iter()
+            .filter(|candidate| candidate.family == definition.family)
+            .filter(|candidate| game.models[&candidate.tile].owner == Some(player))
+            .map(|candidate| game.models[&candidate.tile].tensors)
+            .max()
+            .unwrap_or(0);
+        if state.tensors == max {
+            return Some(Action::ReleaseTensor(definition.tile));
+        }
+    }
+    MODELS
+        .iter()
+        .find(|definition| {
+            let state = &game.models[&definition.tile];
+            state.owner == Some(player)
+                && !state.archived
+                && game
+                    .models
+                    .iter()
+                    .filter_map(|(tile, state)| {
+                        (state.owner == Some(player)
+                            && model(*tile)
+                                .is_some_and(|candidate| candidate.family == definition.family))
+                        .then_some(state.tensors)
+                    })
+                    .all(|tensors| tensors == 0)
+        })
+        .map(|definition| Action::Archive(definition.tile))
+}
+
 fn purchase_reserve(game: &Game) -> i32 {
     if game.config.difficulty == Difficulty::Easy {
         EASY_PURCHASE_RESERVE
@@ -145,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn easy_mode_uses_more_conservative_bot_purchase_reserve() {
+    fn bot_borrows_when_purchase_would_break_its_reserve() {
         let mut easy = Game::new(GameConfig {
             difficulty: Difficulty::Easy,
             ..GameConfig::default()
@@ -155,9 +240,8 @@ mod tests {
         easy.players[1].credits = 550;
         easy.phase = Phase::OfferPurchase { tile: 1 };
         drive_bots(&mut easy).unwrap();
-        assert_eq!(easy.models[&1].owner, None);
-        assert_eq!(easy.phase, Phase::Auction);
-        assert_eq!(easy.auction_actor(), Some(0));
+        assert_eq!(easy.models[&1].owner, Some(1));
+        assert_eq!(easy.players[1].loans.len(), 1);
 
         let mut standard = Game::new(GameConfig::default()).unwrap();
         standard.current_player = 1;
@@ -165,6 +249,7 @@ mod tests {
         standard.phase = Phase::OfferPurchase { tile: 1 };
         drive_bots(&mut standard).unwrap();
         assert_eq!(standard.models[&1].owner, Some(1));
+        assert!(standard.players[1].loans.is_empty());
     }
 
     #[test]

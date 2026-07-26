@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 
 pub const START_CREDITS: i32 = 1_500;
 pub const EASY_HUMAN_START_CREDITS: i32 = 2_000;
+pub const LOAN_AMOUNT: i32 = 5_000;
+pub const LOAN_TERM_ROUNDS: u16 = 10;
 pub const PASS_START_BONUS: i32 = 200;
 pub const COOLDOWN_FEE: i32 = 50;
 pub const MAX_TENSORS: u8 = 4;
@@ -288,6 +290,11 @@ pub struct ModelState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Loan {
+    pub due_round: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Player {
     pub id: usize,
     pub name: String,
@@ -299,6 +306,8 @@ pub struct Player {
     pub cooldown_turns: u8,
     #[serde(alias = "get_out_cards")]
     pub bypass_tokens: u8,
+    #[serde(default)]
+    pub loans: Vec<Loan>,
     pub bankrupt: bool,
 }
 
@@ -308,6 +317,7 @@ pub enum Phase {
     OfferPurchase { tile: usize },
     Auction,
     Manage,
+    LoanSettlement { amount: i32 },
     GameOver,
 }
 
@@ -332,12 +342,31 @@ pub enum Card {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuctionResume {
+    Manage,
+    LoanSettlement { amount: i32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AuctionKind {
+    #[default]
+    Purchase,
+    Bank,
+    PlayerSale {
+        seller: usize,
+        resume: AuctionResume,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuctionState {
     pub tile: usize,
     pub active: Vec<usize>,
     pub bidder_index: usize,
     pub high_bid: i32,
     pub high_bidder: Option<usize>,
+    #[serde(default)]
+    pub kind: AuctionKind,
 }
 
 impl AuctionState {
@@ -409,6 +438,21 @@ pub enum GameLog {
     Restored {
         player: usize,
         tile: usize,
+    },
+    LoanTaken {
+        player: usize,
+        amount: i32,
+        due_round: u16,
+    },
+    LoanRepaid {
+        player: usize,
+        amount: i32,
+    },
+    ModelSold {
+        seller: usize,
+        buyer: usize,
+        tile: usize,
+        price: i32,
     },
     Bankrupt {
         player: usize,
@@ -506,6 +550,9 @@ pub enum Action {
     ReleaseTensor(usize),
     Archive(usize),
     Restore(usize),
+    TakeLoan,
+    SellModel(usize),
+    DeclareBankruptcy,
     EndTurn,
 }
 
@@ -524,6 +571,7 @@ impl Game {
             position: 0,
             cooldown_turns: 0,
             bypass_tokens: 0,
+            loans: Vec::new(),
             bankrupt: false,
         }];
         for index in 0..config.bot_count {
@@ -535,6 +583,7 @@ impl Game {
                 position: 0,
                 cooldown_turns: 0,
                 bypass_tokens: 0,
+                loans: Vec::new(),
                 bankrupt: false,
             });
         }
@@ -605,6 +654,9 @@ impl Game {
             Action::ReleaseTensor(tile) => self.release_tensor(tile),
             Action::Archive(tile) => self.archive(tile),
             Action::Restore(tile) => self.restore(tile),
+            Action::TakeLoan => self.take_loan(),
+            Action::SellModel(tile) => self.sell_model(tile),
+            Action::DeclareBankruptcy => self.declare_bankruptcy(),
             Action::EndTurn => self.end_turn(),
         }
     }
@@ -854,10 +906,22 @@ impl Game {
     }
 
     fn start_auction(&mut self, tile: usize) {
+        self.start_auction_with_kind(tile, AuctionKind::Purchase);
+    }
+
+    fn start_bank_auction(&mut self, tile: usize) {
+        self.start_auction_with_kind(tile, AuctionKind::Bank);
+    }
+
+    fn start_auction_with_kind(&mut self, tile: usize, kind: AuctionKind) {
+        let seller = match &kind {
+            AuctionKind::PlayerSale { seller, .. } => Some(*seller),
+            AuctionKind::Purchase | AuctionKind::Bank => None,
+        };
         let active = self
             .players
             .iter()
-            .filter(|p| !p.bankrupt)
+            .filter(|p| !p.bankrupt && Some(p.id) != seller)
             .map(|p| p.id)
             .collect();
         self.auction = Some(AuctionState {
@@ -866,6 +930,7 @@ impl Game {
             bidder_index: 0,
             high_bid: 0,
             high_bidder: None,
+            kind,
         });
         self.phase = Phase::Auction;
         self.normalize_auction();
@@ -927,19 +992,40 @@ impl Game {
             return;
         }
         let auction = self.auction.take().unwrap();
+        let resume = match &auction.kind {
+            AuctionKind::PlayerSale { resume, .. } => Some(resume.clone()),
+            AuctionKind::Purchase | AuctionKind::Bank => None,
+        };
         if let Some(winner) = auction.high_bidder {
             self.players[winner].credits -= auction.high_bid;
             self.models.get_mut(&auction.tile).unwrap().owner = Some(winner);
-            self.logs.push(GameLog::Bought {
-                player: winner,
-                tile: auction.tile,
-                price: auction.high_bid,
-            });
+            match auction.kind {
+                AuctionKind::PlayerSale { seller, .. } => {
+                    self.players[seller].credits += auction.high_bid;
+                    self.logs.push(GameLog::ModelSold {
+                        seller,
+                        buyer: winner,
+                        tile: auction.tile,
+                        price: auction.high_bid,
+                    });
+                }
+                AuctionKind::Purchase | AuctionKind::Bank => {
+                    self.logs.push(GameLog::Bought {
+                        player: winner,
+                        tile: auction.tile,
+                        price: auction.high_bid,
+                    });
+                }
+            }
         }
         if let Some(tile) = self.pending_bank_auctions.pop() {
-            self.start_auction(tile);
+            self.start_bank_auction(tile);
         } else {
-            self.phase = Phase::Manage;
+            self.phase = match resume {
+                Some(AuctionResume::LoanSettlement { amount }) => Phase::LoanSettlement { amount },
+                Some(AuctionResume::Manage) | None => Phase::Manage,
+            };
+            self.resolve_loan_settlement();
         }
     }
 
@@ -991,7 +1077,7 @@ impl Game {
     }
 
     fn release_tensor(&mut self, tile: usize) -> Result<(), GameError> {
-        if self.phase != Phase::Manage {
+        if !matches!(self.phase, Phase::Manage | Phase::LoanSettlement { .. }) {
             return Err(GameError::InvalidPhase);
         }
         let definition = model(tile).ok_or(GameError::UnknownModel)?;
@@ -1018,11 +1104,12 @@ impl Game {
             tile,
             tensors: state.tensors,
         });
+        self.resolve_loan_settlement();
         Ok(())
     }
 
     fn archive(&mut self, tile: usize) -> Result<(), GameError> {
-        if self.phase != Phase::Manage {
+        if !matches!(self.phase, Phase::Manage | Phase::LoanSettlement { .. }) {
             return Err(GameError::InvalidPhase);
         }
         let definition = model(tile).ok_or(GameError::UnknownModel)?;
@@ -1045,6 +1132,7 @@ impl Game {
         self.models.get_mut(&tile).unwrap().archived = true;
         self.players[player].credits += definition.archive_value();
         self.logs.push(GameLog::Archived { player, tile });
+        self.resolve_loan_settlement();
         Ok(())
     }
 
@@ -1069,6 +1157,115 @@ impl Game {
         self.models.get_mut(&tile).unwrap().archived = false;
         self.logs.push(GameLog::Restored { player, tile });
         Ok(())
+    }
+
+    fn take_loan(&mut self) -> Result<(), GameError> {
+        if !matches!(
+            self.phase,
+            Phase::AwaitRoll | Phase::OfferPurchase { .. } | Phase::Manage
+        ) {
+            return Err(GameError::InvalidPhase);
+        }
+        let player = self.current_player;
+        if self.players[player].bankrupt {
+            return Err(GameError::InvalidAction(
+                "a bankrupt player cannot borrow".into(),
+            ));
+        }
+        let due_round = self.round.saturating_add(LOAN_TERM_ROUNDS);
+        self.players[player].credits += LOAN_AMOUNT;
+        self.players[player].loans.push(Loan { due_round });
+        self.logs.push(GameLog::LoanTaken {
+            player,
+            amount: LOAN_AMOUNT,
+            due_round,
+        });
+        Ok(())
+    }
+
+    fn sell_model(&mut self, tile: usize) -> Result<(), GameError> {
+        let resume = match self.phase {
+            Phase::Manage => AuctionResume::Manage,
+            Phase::LoanSettlement { amount } => AuctionResume::LoanSettlement { amount },
+            _ => return Err(GameError::InvalidPhase),
+        };
+        model(tile).ok_or(GameError::UnknownModel)?;
+        let player = self.current_player;
+        let state = &self.models[&tile];
+        if state.owner != Some(player) {
+            return Err(GameError::NotOwner);
+        }
+        if state.archived {
+            return Err(GameError::InvalidAction(
+                "an archived model cannot be auctioned".into(),
+            ));
+        }
+        if !self
+            .players
+            .iter()
+            .any(|candidate| !candidate.bankrupt && candidate.id != player)
+        {
+            return Err(GameError::InvalidAction(
+                "no solvent opponent can bid".into(),
+            ));
+        }
+        self.start_auction_with_kind(
+            tile,
+            AuctionKind::PlayerSale {
+                seller: player,
+                resume,
+            },
+        );
+        Ok(())
+    }
+
+    fn declare_bankruptcy(&mut self) -> Result<(), GameError> {
+        if !matches!(self.phase, Phase::LoanSettlement { .. }) {
+            return Err(GameError::InvalidPhase);
+        }
+        let player = self.current_player;
+        self.bankrupt(player, None);
+        if self.phase != Phase::GameOver && self.auction.is_none() {
+            if let Some(tile) = self.pending_bank_auctions.pop() {
+                self.start_bank_auction(tile);
+            }
+        }
+        Ok(())
+    }
+
+    fn due_loan_amount(&self, player: usize) -> i32 {
+        self.players[player]
+            .loans
+            .iter()
+            .filter(|loan| loan.due_round <= self.round)
+            .count() as i32
+            * LOAN_AMOUNT
+    }
+
+    fn begin_current_turn(&mut self) {
+        let amount = self.due_loan_amount(self.current_player);
+        if amount == 0 {
+            self.phase = Phase::AwaitRoll;
+            return;
+        }
+        self.phase = Phase::LoanSettlement { amount };
+        self.resolve_loan_settlement();
+    }
+
+    fn resolve_loan_settlement(&mut self) {
+        let Phase::LoanSettlement { amount } = self.phase else {
+            return;
+        };
+        let player = self.current_player;
+        if self.players[player].credits < amount {
+            return;
+        }
+        self.players[player].credits -= amount;
+        self.players[player]
+            .loans
+            .retain(|loan| loan.due_round > self.round);
+        self.logs.push(GameLog::LoanRepaid { player, amount });
+        self.phase = Phase::AwaitRoll;
     }
 
     fn end_turn(&mut self) -> Result<(), GameError> {
@@ -1098,8 +1295,10 @@ impl Game {
             self.round += 1;
         }
         self.current_player = next;
-        self.phase = Phase::AwaitRoll;
         self.check_last_survivor();
+        if self.phase != Phase::GameOver {
+            self.begin_current_turn();
+        }
         Ok(())
     }
 
@@ -1282,7 +1481,7 @@ impl Game {
             self.bankrupt(player, creditor);
             if self.phase != Phase::GameOver && self.auction.is_none() {
                 if let Some(tile) = self.pending_bank_auctions.pop() {
-                    self.start_auction(tile);
+                    self.start_bank_auction(tile);
                 }
             }
         }
@@ -1323,6 +1522,7 @@ impl Game {
     fn bankrupt(&mut self, player: usize, creditor: Option<usize>) {
         self.players[player].bankrupt = true;
         self.players[player].credits = 0;
+        self.players[player].loans.clear();
         for definition in &MODELS {
             let state = self.models.get_mut(&definition.tile).unwrap();
             if state.owner == Some(player) {
@@ -1355,7 +1555,8 @@ impl Game {
     }
 
     pub fn net_worth(&self, player: usize) -> i32 {
-        let mut total = self.players[player].credits;
+        let mut total =
+            self.players[player].credits - self.players[player].loans.len() as i32 * LOAN_AMOUNT;
         for definition in &MODELS {
             let state = &self.models[&definition.tile];
             if state.owner == Some(player) {
@@ -1722,5 +1923,98 @@ mod tests {
         assert!(game.players[0].bankrupt);
         assert_eq!(game.models[&1].owner, Some(1));
         assert!(game.auction.is_none());
+    }
+
+    #[test]
+    fn multiple_loans_are_repaid_together_after_ten_rounds() {
+        let mut game = Game::new(GameConfig::default()).unwrap();
+        game.apply(Action::TakeLoan).unwrap();
+        game.apply(Action::TakeLoan).unwrap();
+        assert_eq!(game.players[0].credits, START_CREDITS + LOAN_AMOUNT * 2);
+        assert_eq!(game.players[0].loans.len(), 2);
+        assert_eq!(game.players[0].loans[0].due_round, 11);
+        assert_eq!(game.net_worth(0), START_CREDITS);
+
+        game.round = 10;
+        game.current_player = 1;
+        game.phase = Phase::Manage;
+        game.apply(Action::EndTurn).unwrap();
+
+        assert_eq!(game.round, 11);
+        assert_eq!(game.current_player, 0);
+        assert_eq!(game.phase, Phase::AwaitRoll);
+        assert_eq!(game.players[0].credits, START_CREDITS);
+        assert!(game.players[0].loans.is_empty());
+        assert!(matches!(
+            game.logs.last(),
+            Some(GameLog::LoanRepaid { amount, .. }) if *amount == LOAN_AMOUNT * 2
+        ));
+    }
+
+    #[test]
+    fn underfunded_loan_enters_settlement_and_allows_bankruptcy() {
+        let mut game = Game::new(GameConfig::default()).unwrap();
+        game.players[0].loans.push(Loan { due_round: 11 });
+        game.players[0].credits = 0;
+        game.round = 10;
+        game.current_player = 1;
+        game.phase = Phase::Manage;
+        game.apply(Action::EndTurn).unwrap();
+
+        assert_eq!(
+            game.phase,
+            Phase::LoanSettlement {
+                amount: LOAN_AMOUNT
+            }
+        );
+        assert!(game.apply(Action::TakeLoan).is_err());
+        game.apply(Action::DeclareBankruptcy).unwrap();
+        assert!(game.players[0].bankrupt);
+        assert!(game.players[0].loans.is_empty());
+    }
+
+    #[test]
+    fn owned_model_auction_pays_seller_and_preserves_tensors() {
+        let mut game = Game::new(GameConfig::default()).unwrap();
+        game.models.get_mut(&1).unwrap().owner = Some(0);
+        game.models.get_mut(&1).unwrap().tensors = 2;
+        game.phase = Phase::Manage;
+        let seller_credits = game.players[0].credits;
+
+        game.apply(Action::SellModel(1)).unwrap();
+        assert_eq!(game.auction_actor(), Some(1));
+        game.apply(Action::AuctionBid(100)).unwrap();
+
+        assert_eq!(game.models[&1].owner, Some(1));
+        assert_eq!(game.models[&1].tensors, 2);
+        assert_eq!(game.players[0].credits, seller_credits + 100);
+        assert_eq!(game.phase, Phase::Manage);
+        assert!(matches!(
+            game.logs.last(),
+            Some(GameLog::ModelSold {
+                seller: 0,
+                buyer: 1,
+                tile: 1,
+                price: 100
+            })
+        ));
+    }
+
+    #[test]
+    fn sale_proceeds_can_finish_loan_settlement() {
+        let mut game = Game::new(GameConfig::default()).unwrap();
+        game.models.get_mut(&1).unwrap().owner = Some(0);
+        game.players[0].loans.push(Loan { due_round: 1 });
+        game.players[0].credits = LOAN_AMOUNT - 100;
+        game.phase = Phase::LoanSettlement {
+            amount: LOAN_AMOUNT,
+        };
+
+        game.apply(Action::SellModel(1)).unwrap();
+        game.apply(Action::AuctionBid(100)).unwrap();
+
+        assert_eq!(game.phase, Phase::AwaitRoll);
+        assert_eq!(game.players[0].credits, 0);
+        assert!(game.players[0].loans.is_empty());
     }
 }
