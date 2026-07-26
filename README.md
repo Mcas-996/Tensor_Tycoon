@@ -136,7 +136,8 @@ quit
 - **Auctions** begin when a purchase is declined and include every player who
   has not gone bankrupt.
 - **Loans** grant 5,000 credits each and are due after ten rounds. Loans due
-  together are repaid as one amount, and outstanding principal reduces net worth.
+  together are repaid as one amount; outstanding principal does not reduce net
+  worth.
 - **Loan settlement** allows releasing Tensors, archiving models, or auctioning
   active models with their Tensors. The player may also declare bankruptcy.
 - **Saves** use a versioned format; legacy application data and version 1 saves

@@ -1555,8 +1555,7 @@ impl Game {
     }
 
     pub fn net_worth(&self, player: usize) -> i32 {
-        let mut total =
-            self.players[player].credits - self.players[player].loans.len() as i32 * LOAN_AMOUNT;
+        let mut total = self.players[player].credits;
         for definition in &MODELS {
             let state = &self.models[&definition.tile];
             if state.owner == Some(player) {
@@ -1879,7 +1878,8 @@ mod tests {
         game.round = game.config.round_limit;
         game.current_player = game.players.len() - 1;
         game.phase = Phase::Manage;
-        game.players[1].credits += 1;
+        game.players[1].credits += LOAN_AMOUNT;
+        game.players[1].loans.push(Loan { due_round: 11 });
         game.apply(Action::EndTurn).unwrap();
         assert_eq!(game.phase, Phase::GameOver);
         assert_eq!(game.winners, vec![1]);
@@ -1933,7 +1933,7 @@ mod tests {
         assert_eq!(game.players[0].credits, START_CREDITS + LOAN_AMOUNT * 2);
         assert_eq!(game.players[0].loans.len(), 2);
         assert_eq!(game.players[0].loans[0].due_round, 11);
-        assert_eq!(game.net_worth(0), START_CREDITS);
+        assert_eq!(game.net_worth(0), START_CREDITS + LOAN_AMOUNT * 2);
 
         game.round = 10;
         game.current_player = 1;
