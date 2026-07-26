@@ -1,19 +1,9 @@
-# Tensor Tycoon / 张量大亨
+# Tensor Tycoon 
 
-A bilingual terminal strategy game built with Rust and
-[`ratatui`](https://ratatui.rs/). One human player competes with one to three
-deterministic bots to deploy AI models, collect usage credits, and allocate
-Tensor capacity on a compact 24-tile board.
 
-## Features
 
-- 16 text-generation models from the Qwen, Llama, DeepSeek, and Kimi families
-- Prices derived logarithmically from the models' published total parameter counts
-- Family bonuses after deploying any three models from the same family
-- Even Tensor allocation, release, archiving, restoration, and auctions
-- Random Seed events, compute bills, cooldowns, cache hits, and context overflows
-- Selectable Easy mode with stronger human luck and more conservative bots
-- Chinese and English UI, deterministic saves, and a versioned multi-save manager
+https://github.com/user-attachments/assets/08a70016-71b2-44c7-bf66-b4c172fbe80d
+
 
 ## Quick Start
 
