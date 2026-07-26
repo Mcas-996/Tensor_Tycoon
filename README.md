@@ -11,8 +11,8 @@ and becoming the last tycoon standing.
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/Mcas-996/monopoly_cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Mcas-996/monopoly_cli/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/Mcas-996/monopoly_cli?display_name=tag&sort=semver)](https://github.com/Mcas-996/monopoly_cli/releases/latest)
+[![CI](https://github.com/Mcas-996/Tensor_Tycoon/actions/workflows/ci.yml/badge.svg)](https://github.com/Mcas-996/Tensor_Tycoon/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Mcas-996/Tensor_Tycoon?display_name=tag&sort=semver)](https://github.com/Mcas-996/Tensor_Tycoon/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-dca282.svg?logo=rust)](https://www.rust-lang.org/)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#installation)
@@ -56,13 +56,13 @@ Prebuilt installers are published for macOS, Linux, and Windows.
 ### macOS / Linux
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Mcas-996/monopoly_cli/releases/latest/download/tensor_tycoon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Mcas-996/Tensor_Tycoon/releases/latest/download/tensor_tycoon-installer.sh | sh
 ```
 
 ### Windows PowerShell
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/Mcas-996/monopoly_cli/releases/latest/download/tensor_tycoon-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/Mcas-996/Tensor_Tycoon/releases/latest/download/tensor_tycoon-installer.ps1 | iex"
 ```
 
 Start the game after installation:
