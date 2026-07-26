@@ -17,14 +17,37 @@ Tensor capacity on a compact 24-tile board.
 - Random Seed events, compute bills, cooldowns, cache hits, and context overflows
 - Chinese and English UI, deterministic saves, and a versioned multi-save manager
 
-## Run
+## Quick Start
 
-```console
-cargo run --release
+### macOS / Linux
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Mcas-996/monopoly_cli/releases/latest/download/tensor_tycoon-installer.sh | sh
 ```
 
-The terminal must be at least 98 columns by 28 rows. Release builds target
-Windows, Linux, and Apple Silicon macOS.
+### Windows PowerShell
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/Mcas-996/monopoly_cli/releases/latest/download/tensor_tycoon-installer.ps1 | iex"
+```
+
+After installation, start the game with:
+
+```console
+tensor_tycoon
+```
+
+## Updating
+
+Installations created by the shell or PowerShell installer include an updater.
+Run:
+
+```console
+tensor_tycoon-update
+```
+
+The updater checks GitHub Releases and installs a newer version when one is
+available.
 
 ## Controls
 
@@ -53,17 +76,8 @@ normal bankruptcy flow applies and the player does not move.
 
 ## Development
 
-```console
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
-cargo build --release
-```
-
-The game engine is independent from the TUI. UI input, text commands, and bot
-decisions submit the same validated game actions. Version 1 saves and the former
-application data directory are copied and migrated automatically; the old data
-is retained as a backup.
+See the [development guide](docs/development.md) for build commands and
+implementation notes.
 
 ## Model names and attribution
 
